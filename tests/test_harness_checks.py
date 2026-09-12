@@ -114,7 +114,7 @@ class TestSecretScanning:
         GEMINI_API_KEY=your_gemini_api_key
         GROQ_API_KEY=your_groq_api_key
         SAHARA_TOKEN=replace_with_token
-        SHOPIFY_API_KEY=example_api_key
+        SHOPIFY_APP_CLIENT_ID=example_client_id
         """
         errors = scan_content_for_secrets(safe_content, "safe.env")
         assert errors == []
