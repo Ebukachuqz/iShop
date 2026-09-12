@@ -118,7 +118,27 @@ switch (command) {
   }
 
   case 'test:integration': {
-    notImplemented('test:integration', 'WP-04', 'WP-04.md');
+    console.log('[iShop] Running deterministic integration tests across JavaScript and Python...');
+
+    // 1. JavaScript bridge and adapter parity integration tests
+    runStep(
+      'JavaScript Storefront Bridge Integration Tests',
+      'node',
+      ['--test', 'packages/contracts/tests/bridge.test.js']
+    );
+
+    // 2. Python commerce catalog resolution and cart reconciliation integration tests
+    runStep(
+      'Python Commerce & Reconciliation Integration Tests',
+      'python',
+      ['-m', 'pytest', 'services/runtime/tests/test_commerce.py', '-v']
+    );
+
+    if (overallExitCode !== 0) {
+      console.error('\n[iShop] One or more integration test suites FAILED.');
+      process.exit(overallExitCode);
+    }
+    console.log('\n[iShop] All integration tests passed.');
     break;
   }
 
