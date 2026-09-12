@@ -42,6 +42,8 @@ def validate_run(manifest, base_dir=None):
         if not all(asr.get(k) for k in ("provider", "model", "route")) or "settings" not in asr:
             errors.append("Recorded ASR outputs require frozen provider/model/route/settings")
     seen = set()
+    dev_speakers = set()
+    test_speakers = set()
     if not manifest.episodes:
         errors.append("Manifest contains no episodes")
     for ep in manifest.episodes:
@@ -50,6 +52,11 @@ def validate_run(manifest, base_dir=None):
         seen.add(ep.episode_id)
         if ep.split not in ("dev", "test"):
             errors.append("Invalid split")
+        if ep.speaker_id:
+            if ep.split == "dev":
+                dev_speakers.add(ep.speaker_id)
+            elif ep.split == "test":
+                test_speakers.add(ep.speaker_id)
         if type(ep.consent_allowed) is not bool:
             errors.append("Consent must be an explicit boolean")
         if any(not isinstance(p, str) or not p for p in ep.allowed_processors):
@@ -68,4 +75,32 @@ def validate_run(manifest, base_dir=None):
                 errors.append(f"audio_ref not found: {ep.episode_id}")
             elif not ep.audio_sha256 or hashlib.sha256(path.read_bytes()).hexdigest() != ep.audio_sha256:
                 errors.append(f"Audio content hash mismatch: {ep.episode_id}")
+
+    if dev_speakers & test_speakers:
+        errors.append("Speaker overlap detected between dev and test splits")
+
     return errors
+
+
+def validate_catalog_compatibility(manifest, catalog_evidence):
+    """Verifies that all expected variant and product IDs in manifest exist in catalog evidence."""
+    errors = []
+    known_products = set(catalog_evidence.products.keys())
+    known_variants = {
+        v.variant_id
+        for p in catalog_evidence.products.values()
+        for v in p.variants
+    }
+
+    for ep in manifest.episodes:
+        for line in ep.initial_cart_lines:
+            vid = line.get("variant_id")
+            if vid and vid not in known_variants:
+                errors.append(f"Episode {ep.episode_id}: initial cart variant '{vid}' not in catalog")
+        for line in ep.expected_cart_lines:
+            vid = line.get("variant_id")
+            if vid and vid not in known_variants:
+                errors.append(f"Episode {ep.episode_id}: expected cart variant '{vid}' not in catalog")
+    return errors
+
+
