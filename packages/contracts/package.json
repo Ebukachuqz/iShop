@@ -7,7 +7,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "node -e \"console.log('@ishop/contracts build scaffolding')\"",
-    "test": "node --test tests/*.test.js 2>nul || node -e \"console.log('Contracts unit tests discovery placeholder')\""
+    "test": "node --test tests"
   },
   "keywords": [
     "shopify",

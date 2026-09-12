@@ -3,6 +3,7 @@
  * Cross-platform Command Dispatcher for iShop (Drake)
  * Implements the command contract defined in docs/DEVELOPMENT.md.
  * Ensures future suites fail with an actionable "not implemented" error rather than a false pass.
+ * Ensures robust failure propagation across all checks and test suites.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -10,19 +11,32 @@ import process from 'node:process';
 
 const command = process.argv[2];
 const args = process.argv.slice(3);
+const isCI = args.includes('--ci') || process.env.CI === 'true';
 
-function run(cmd, cmdArgs) {
+let overallExitCode = 0;
+
+function runStep(name, cmd, cmdArgs) {
+  console.log(`\n--- Running: ${name} ---`);
   const result = spawnSync(cmd, cmdArgs, {
     stdio: 'inherit',
     shell: true,
   });
+
   if (result.error) {
-    console.error(`Execution error running ${cmd}:`, result.error.message);
-    process.exit(1);
+    console.error(`[Error] Execution failure in ${name}:`, result.error.message);
+    overallExitCode = 1;
+    return false;
   }
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+
+  const code = result.status ?? 1;
+  if (code !== 0) {
+    console.error(`[Failure] ${name} exited with status code ${code}`);
+    overallExitCode = 1;
+    return false;
   }
+
+  console.log(`[Success] ${name} passed.`);
+  return true;
 }
 
 function notImplemented(commandName, ownerPackage, plannedDoc) {
@@ -35,14 +49,17 @@ function notImplemented(commandName, ownerPackage, plannedDoc) {
 
 switch (command) {
   case 'bootstrap': {
-    console.log('[iShop] Bootstrapping workspace dependencies...');
-    // Run pnpm install for Node workspace
-    console.log('[iShop] Installing Node.js workspace dependencies...');
-    run('pnpm', ['install']);
-    // Verify Python environment
-    console.log('[iShop] Verifying Python runtime environment...');
-    run('python', ['-m', 'pip', 'install', '-e', 'services/runtime']);
-    console.log('[iShop] Bootstrap complete.');
+    console.log('[iShop] Bootstrapping workspace dependencies with reproducible locks...');
+    // 1. Pnpm workspace dependencies
+    runStep('pnpm install', 'pnpm', ['install']);
+    // 2. Python dependencies via uv sync
+    runStep('uv sync', 'python', ['-m', 'uv', 'sync']);
+
+    if (overallExitCode !== 0) {
+      console.error('\n[iShop] Bootstrap failed.');
+      process.exit(overallExitCode);
+    }
+    console.log('\n[iShop] Bootstrap complete and locked.');
     break;
   }
 
@@ -52,23 +69,51 @@ switch (command) {
   }
 
   case 'check': {
-    console.log('[iShop] Running workspace validation checks...');
-    console.log('--- Check 1: Documentation link & authority integrity ---');
-    run('python', ['scripts/check-docs.py']);
+    console.log(`[iShop] Running workspace validation checks (mode: ${isCI ? 'CI' : 'local'})...`);
 
-    console.log('\n--- Check 2: Secret exclusions & private data integrity ---');
-    run('python', ['scripts/check-secrets.py']);
+    // Check 1: Documentation integrity (passes --ci if in CI mode)
+    const docsArgs = ['scripts/check-docs.py'];
+    if (isCI) {
+      docsArgs.push('--ci');
+    }
+    runStep('Documentation & Mapping Integrity', 'python', docsArgs);
 
-    console.log('\n--- Check 3: Architecture and package boundaries ---');
-    run('python', ['scripts/check-boundaries.py']);
+    // Check 2: Secret exclusions & private data integrity
+    runStep('Secret Exclusions & Privacy Audit', 'python', ['scripts/check-secrets.py']);
 
+    // Check 3: Architecture and package boundaries
+    runStep('Architectural Boundaries Audit', 'python', ['scripts/check-boundaries.py']);
+
+    if (overallExitCode !== 0) {
+      console.error('\n[iShop] One or more workspace validation checks FAILED.');
+      process.exit(overallExitCode);
+    }
     console.log('\n[iShop] All workspace checks passed.');
     break;
   }
 
   case 'test:unit': {
-    console.log('[iShop] Running unit smoke and domain tests...');
-    run('python', ['-m', 'pytest', 'services/runtime/tests', '-v']);
+    console.log('[iShop] Running offline unit and domain tests across JavaScript and Python...');
+
+    // 1. JavaScript tests (Node.js test runner)
+    runStep(
+      'JavaScript Unit & Contract Tests',
+      'node',
+      ['--test', 'packages/contracts/tests']
+    );
+
+    // 2. Python tests (pytest discovering services/runtime and negative harness tests)
+    runStep(
+      'Python Unit & Domain Tests',
+      'python',
+      ['-m', 'pytest', 'services/runtime/tests', 'tests', '-v']
+    );
+
+    if (overallExitCode !== 0) {
+      console.error('\n[iShop] One or more unit test suites FAILED.');
+      process.exit(overallExitCode);
+    }
+    console.log('\n[iShop] All unit tests passed.');
     break;
   }
 

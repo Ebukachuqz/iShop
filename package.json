@@ -13,6 +13,8 @@
     "bootstrap": "node scripts/command-dispatcher.mjs bootstrap",
     "dev": "node scripts/command-dispatcher.mjs dev",
     "check": "node scripts/command-dispatcher.mjs check",
+    "check:ci": "node scripts/command-dispatcher.mjs check --ci",
+    "check:docs": "python scripts/check-docs.py",
     "test:unit": "node scripts/command-dispatcher.mjs test:unit",
     "test:integration": "node scripts/command-dispatcher.mjs test:integration",
     "test:e2e": "node scripts/command-dispatcher.mjs test:e2e",
