@@ -235,6 +235,17 @@ if (isMainModule) {
     break;
   }
 
+  case 'eval:asr': {
+    console.log('[iShop] Running the frozen ASR panel...');
+    runPythonStep('ASR Panel Evaluation', ['-m', 'evals.cli.asr_benchmark', ...args]);
+    if (overallExitCode !== 0) {
+      console.error('\n[iShop] ASR panel evaluation failed.');
+      process.exit(overallExitCode);
+    }
+    console.log('\n[iShop] ASR panel evaluation completed.');
+    break;
+  }
+
   case 'eval:report': {
     console.log('[iShop] Generating evaluation report...');
     runPythonStep(
@@ -252,7 +263,7 @@ if (isMainModule) {
 
   default: {
     console.error(`[iShop] Unknown command: '${command}'`);
-    console.error('Available commands: bootstrap, dev, check, test:unit, test:integration, test:e2e, test:live, eval:validate, eval:run, eval:report');
+    console.error('Available commands: bootstrap, dev, check, test:unit, test:integration, test:e2e, test:live, eval:validate, eval:run, eval:asr, eval:report');
     process.exit(1);
   }
 }

@@ -37,10 +37,18 @@ def validate_run(manifest, base_dir=None):
         errors.append("Scorer self-test cannot be research")
     if manifest.data_kind == "research" and config.get("llm", {}).get("provider_name") == "fake":
         errors.append("Fake provider results must be labelled synthetic")
-    if manifest.data_kind == "research" and manifest.mode in ("controlled_asr", "benchmark"):
+    if manifest.data_kind == "research" and manifest.mode == "controlled_asr":
         asr = config.get("asr", {})
         if not all(asr.get(k) for k in ("provider", "model", "route")) or "settings" not in asr:
             errors.append("Recorded ASR outputs require frozen provider/model/route/settings")
+    if manifest.data_kind == "research" and manifest.mode == "benchmark":
+        panel = config.get("asr_panel")
+        if not isinstance(panel, list) or not panel:
+            errors.append("Benchmark requires a frozen asr_panel")
+        elif any(not isinstance(item, dict) or
+                 not all(item.get(k) for k in ("profile_id", "provider", "model", "route")) or
+                 "settings" not in item for item in panel):
+            errors.append("Every ASR panel entry requires profile_id/provider/model/route/settings")
     seen = set()
     seen_audio_hashes = set()
     dev_speakers = set()
@@ -68,7 +76,7 @@ def validate_run(manifest, base_dir=None):
             errors.append("Clarification goal requires expected fields")
         if manifest.data_kind == "research" and manifest.mode in ("controlled_asr", "benchmark") and not ep.audio_ref:
             errors.append("Research ASR episode requires audio_ref and audio_sha256")
-        if manifest.data_kind == "research" and manifest.mode in ("controlled_asr", "benchmark"):
+        if manifest.data_kind == "research" and manifest.mode == "controlled_asr":
             provider = config.get("asr", {}).get("provider")
             if not ep.consent_allowed:
                 errors.append(f"Research episode {ep.episode_id} lacks cloud-processing consent")
@@ -118,4 +126,3 @@ def validate_catalog_compatibility(manifest, catalog_evidence):
             if value and value not in known:
                 errors.append(f"Episode {ep.episode_id}: critical {slot_name} '{value}' not in catalog")
     return errors
-

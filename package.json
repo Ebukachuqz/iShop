@@ -21,6 +21,7 @@
     "test:live": "node scripts/command-dispatcher.mjs test:live",
     "eval:validate": "node scripts/command-dispatcher.mjs eval:validate",
     "eval:run": "node scripts/command-dispatcher.mjs eval:run",
+    "eval:asr": "node scripts/command-dispatcher.mjs eval:asr",
     "eval:report": "node scripts/command-dispatcher.mjs eval:report"
   }
 }

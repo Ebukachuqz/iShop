@@ -151,11 +151,19 @@ def test_t23_disallowed_cloud_processor_fails_validation():
     manifest = create_valid_manifest(episodes=[episode], configuration={
         "asr": {"provider": "groq", "model": "whisper-large-v3", "route": "batch", "settings": {}}
     })
-    manifest = RunManifest.create(manifest.run_id, manifest.created_at_utc, "benchmark",
+    manifest = RunManifest.create(manifest.run_id, manifest.created_at_utc, "controlled_asr",
                                   manifest.normalization_version, list(manifest.episodes),
                                   manifest.configuration, "research")
     errors = validate_run(manifest)
     assert any("not allowed" in error for error in errors)
+
+
+def test_t26_benchmark_requires_frozen_asr_panel():
+    manifest = create_valid_manifest(configuration={})
+    manifest = RunManifest.create(manifest.run_id, manifest.created_at_utc, "benchmark",
+                                  manifest.normalization_version, list(manifest.episodes),
+                                  manifest.configuration, "research")
+    assert any("asr_panel" in error for error in validate_run(manifest))
 
 
 def test_t25_unicode_normalization_preserves_yoruba_subdots_and_diacritics():
@@ -169,4 +177,3 @@ def test_t25_unicode_normalization_preserves_yoruba_subdots_and_diacritics():
     pidgin_text = "Abeg   give me 2   embroidered caps   dem!"
     norm_pidgin = normalize_text(pidgin_text, version="ishop-unicode-v1")
     assert norm_pidgin == "abeg give me 2 embroidered caps dem"
-
