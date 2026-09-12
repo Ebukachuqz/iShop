@@ -570,9 +570,8 @@ class ShoppingController:
                     l for l in current_cart.lines
                     if l.canonical_key == intent.target_line_key
                     or getattr(l, "shopify_line_key", None) == intent.target_line_key
-                    or l.variant_id == intent.target_line_key
                 ]
-            if not matching_lines and intent.product_query:
+            if not intent.target_line_key and intent.product_query:
                 pq = intent.product_query.lower()
                 matching_prod_ids = {
                     p.product_id for p in evidence.products.values()
@@ -597,7 +596,7 @@ class ShoppingController:
                     reason="Target item for removal not found in current cart (T-05)",
                 )
 
-            if len(matching_lines) > 1 and intent.selected_variant_attributes:
+            if intent.selected_variant_attributes:
                 filtered = []
                 for line in matching_lines:
                     v_ev = None
@@ -608,13 +607,18 @@ class ShoppingController:
                                 break
                         if v_ev:
                             break
-                    if v_ev and all(
-                        v_ev.selected_options.get(k.lower()) == val.lower()
-                        for k, val in intent.selected_variant_attributes.items()
+                    options = {k.lower(): v.lower() for k, v in v_ev.selected_options.items()} if v_ev else {}
+                    if v_ev and all(options.get(k) == val for k, val in positive_opts.items()) and all(
+                        k in options and options[k] != val for k, val in excluded_opts.items()
                     ):
                         filtered.append(line)
-                if len(filtered) == 1:
-                    matching_lines = filtered
+                matching_lines = filtered
+                if not matching_lines:
+                    return ControllerTurnResult(
+                        session_id, turn_id, request_revision, page_epoch, "rejected",
+                        "No cart item matches the variant you asked to remove.",
+                        extracted_intent=intent, reason="Requested variant absent from cart",
+                    )
 
             if len(matching_lines) > 1:
                 opts = [l.variant_id for l in matching_lines]
@@ -685,6 +689,12 @@ class ShoppingController:
 
             # Enforce budget constraint (R4, T-06)
             if intent.budget_constraint:
+                if intent.budget_constraint.scope == "unknown":
+                    return ControllerTurnResult(
+                        session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                        "Is that budget for each item or the total requested quantity?",
+                        extracted_intent=intent, reason="Unresolved budget scope",
+                    )
                 try:
                     budget_money = Money.from_string(
                         intent.budget_constraint.max_amount,
@@ -713,7 +723,7 @@ class ShoppingController:
                             reason=f"Variant price {variant.price} exceeds budget constraint {budget_money} (T-06)",
                         )
                     total_cost = variant.price * target.quantity
-                    if total_cost > budget_money and target.quantity > 1:
+                    if intent.budget_constraint.scope == "total" and total_cost > budget_money:
                         return ControllerTurnResult(
                             session_id=session_id,
                             turn_id=turn_id,
@@ -830,7 +840,7 @@ class ShoppingController:
             after_cart = client.read_cart()
             new_count = sum(l.quantity for l in after_cart.lines)
             item_label = variant.variant_title if variant else f"item {action.line_key or action.variant_id}"
-            if q_op == QuantityOperation.REMOVE:
+            if cmd.operation == CommandOperation.REMOVE_LINE:
                 spoken = f"Removed {item_label} from your cart. You now have {new_count} items in your cart."
             else:
                 spoken = f"Added {item_label} to your cart. You now have {new_count} items in your cart."

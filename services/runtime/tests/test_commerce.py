@@ -300,7 +300,7 @@ def test_t13_process_restart_recovery(memory_journal: CommandJournal):
     ver = CartVerifier.verify_action(cart, action, "sess_1", "turn_1", 1, 1)
 
     # 1. Command prepares and dispatches
-    memory_journal.prepare_command(ver.command)
+    memory_journal.prepare_command(ver.command, before_cart=cart)
     memory_journal.mark_dispatched(ver.command.command_id)
 
     # 2. Simulator executed mutation, but process died before receipt was recorded

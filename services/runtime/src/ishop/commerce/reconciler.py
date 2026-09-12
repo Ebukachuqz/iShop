@@ -168,7 +168,15 @@ class CommandReconciler:
             )
 
         # 7. Post-mutation read-back verification (S-06, T-08)
-        after_cart = result.cart_snapshot if result.cart_snapshot else adapter.read_cart()
+        try:
+            after_cart = adapter.read_cart()
+        except Exception:
+            return self._finalize(
+                command, ExecutionOutcome.UNCERTAIN, transport_name,
+                "Independent cart read-back unavailable; retry prohibited",
+                errors=["Read-back unavailable"], before_fp=before_fp,
+                dispatched_utc=dispatched_utc,
+            )
         after_fp = after_cart.fingerprint()
 
         # Check for userErrors even with HTTP 200 (T-08)
@@ -261,39 +269,9 @@ class CommandReconciler:
                 msg = "Reconciled uncertain command: live cart state diverged from expected effect (S-06, S-08)"
                 errors = ["Live cart state diverged from expected effect"]
         else:
-            params = command.parameters
-            variant_id = params.get("variant_id")
-            target_qty = params.get("quantity", 0)
-            target_line_key = params.get("target_line_key")
-            norm_props = {str(k): str(v) for k, v in sorted(params.get("properties", {}).items())}
-            selling_plan_id = params.get("selling_plan_id")
-
-            matched = False
-            if command.operation == CommandOperation.REMOVE_LINE:
-                line_present = any(
-                    l.canonical_key == target_line_key or l.variant_id == variant_id
-                    for l in live_cart.lines
-                )
-                matched = not line_present
-            else:
-                for line in live_cart.lines:
-                    if (
-                        line.variant_id == variant_id
-                        and line.properties == norm_props
-                        and line.selling_plan_id == selling_plan_id
-                    ):
-                        if line.quantity == target_qty:
-                            matched = True
-                            break
-
-            if matched:
-                outcome = ExecutionOutcome.VERIFIED_SUCCESS
-                msg = "Reconciled uncertain command: live cart satisfies expected effect (T-13, T-14)"
-                errors = []
-            else:
-                outcome = ExecutionOutcome.UNCERTAIN
-                msg = "Reconciled uncertain command: mutation was not observed on live cart; retry prohibited (S-10, T-14)"
-                errors = ["Mutation not confirmed on live cart"]
+            outcome = ExecutionOutcome.UNCERTAIN
+            msg = "Missing trustworthy before-cart evidence; full effect cannot be verified"
+            errors = ["Recovery evidence unavailable; retry prohibited"]
 
         receipt = self._finalize(
             command=command,

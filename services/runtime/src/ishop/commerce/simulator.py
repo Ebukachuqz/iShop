@@ -51,6 +51,7 @@ class SimulatedLine:
             quantity=self.quantity,
             selling_plan_id=self.selling_plan_id,
             properties=self.properties,
+            shopify_line_key=self.line_key,
         )
 
 

@@ -76,6 +76,11 @@ class Money:
             raise ValueError(f"Cannot add mismatched currencies: {self.currency} and {getattr(other, 'currency', None)}")
         return Money(amount=self.amount + other.amount, currency=self.currency)
 
+    def __mul__(self, quantity: int) -> Money:
+        if type(quantity) is not int or quantity < 0:
+            raise ValueError("Money quantity must be a nonnegative integer")
+        return Money(amount=self.amount * quantity, currency=self.currency)
+
     def __sub__(self, other: Money) -> Money:
         if not isinstance(other, Money) or self.currency != other.currency:
             raise ValueError(f"Cannot subtract mismatched currencies: {self.currency} and {getattr(other, 'currency', None)}")

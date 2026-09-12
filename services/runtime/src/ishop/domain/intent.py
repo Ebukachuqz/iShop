@@ -54,15 +54,18 @@ class BudgetConstraint:
 
     max_amount: str
     currency: str
+    scope: str = "total"
 
     def __post_init__(self):
+        if self.scope not in ("total", "per_item", "unknown"):
+            raise ValueError("Invalid budget scope")
         curr = self.currency.upper()
         object.__setattr__(self, "currency", curr)
         if not curr.isalpha() or len(curr) != 3:
             raise ValueError(f"Invalid ISO currency code: {self.currency}")
 
     def to_dict(self) -> dict[str, str]:
-        return {"max_amount": self.max_amount, "currency": self.currency}
+        return {"max_amount": self.max_amount, "currency": self.currency, "scope": self.scope}
 
 
 def validate_shopping_intent_payload(data: Any) -> list[str]:
@@ -174,9 +177,11 @@ def validate_shopping_intent_payload(data: Any) -> list[str]:
         if not isinstance(bc, dict):
             errors.append(f"budget_constraint must be an object or null, got {type(bc).__name__}")
         else:
-            bc_unexpected = set(bc.keys()) - {"max_amount", "currency"}
+            bc_unexpected = set(bc.keys()) - {"max_amount", "currency", "scope"}
             if bc_unexpected:
                 errors.append(f"budget_constraint has unexpected additional properties: {sorted(bc_unexpected)}")
+            if bc.get("scope", "total") not in ("total", "per_item", "unknown"):
+                errors.append("budget_constraint scope must be total, per_item or unknown")
             if "max_amount" not in bc:
                 errors.append("budget_constraint missing required property 'max_amount'")
             elif not isinstance(bc["max_amount"], str):
@@ -250,6 +255,7 @@ class ShoppingIntent:
             BudgetConstraint(
                 max_amount=str(budget_dict["max_amount"]),
                 currency=str(budget_dict["currency"]),
+                scope=budget_dict.get("scope", "total"),
             )
             if budget_dict
             else None

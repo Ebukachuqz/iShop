@@ -79,9 +79,13 @@ class CartVerifier:
 
         if action.line_key:
             for line in current_cart.lines:
-                if line.canonical_key == action.line_key:
+                if action.line_key in (line.canonical_key, line.shopify_line_key):
                     target_line = line
                     break
+            if target_line is None:
+                return VerificationOutcome(allowed=False, reason="Unknown or stale cart line locator")
+            if action.variant_id and target_line.variant_id != action.variant_id:
+                return VerificationOutcome(allowed=False, reason="Variant does not match cart line")
         elif action.variant_id:
             # Match by variant_id plus properties and selling_plan_id (T-10)
             candidate_lines = [

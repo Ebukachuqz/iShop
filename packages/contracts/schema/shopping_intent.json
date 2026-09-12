@@ -7,7 +7,9 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "enum": ["1.0.0"]
+      "enum": [
+        "1.0.0"
+      ]
     },
     "intent_id": {
       "type": "string"
@@ -28,7 +30,10 @@
       ]
     },
     "product_query": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "selected_variant_attributes": {
       "type": "object",
@@ -37,24 +42,39 @@
       }
     },
     "quantity_change": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["set", "increment"]
+          "enum": [
+            "set",
+            "increment"
+          ]
         },
         "value": {
           "type": "integer"
         }
       },
-      "required": ["mode", "value"],
+      "required": [
+        "mode",
+        "value"
+      ],
       "additionalProperties": false
     },
     "target_line_key": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "budget_constraint": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "properties": {
         "max_amount": {
           "type": "string"
@@ -62,9 +82,21 @@
         "currency": {
           "type": "string",
           "pattern": "^[A-Z]{3}$"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "total",
+            "per_item",
+            "unknown"
+          ],
+          "default": "total"
         }
       },
-      "required": ["max_amount", "currency"],
+      "required": [
+        "max_amount",
+        "currency"
+      ],
       "additionalProperties": false
     },
     "is_explicit_checkout_request": {
@@ -74,7 +106,10 @@
       "type": "string"
     },
     "original_language_wording": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "unresolved_fields": {
       "type": "array",
