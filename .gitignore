@@ -29,6 +29,7 @@ build/
 .react-router/
 .shopify/
 .scaffold/
+.tools/
 *.sqlite
 *.sqlite3
 *.db
