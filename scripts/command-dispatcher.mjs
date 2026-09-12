@@ -8,6 +8,8 @@
 
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 const command = process.argv[2];
 const args = process.argv.slice(3);
@@ -15,7 +17,38 @@ const isCI = args.includes('--ci') || process.env.CI === 'true';
 
 let overallExitCode = 0;
 
-function runStep(name, cmd, cmdArgs) {
+export function resolvePythonRunner(pythonArgs, overrides = {}) {
+  const spawnCheck = overrides.spawnCheck || ((cmd, checkArgs) => spawnSync(cmd, checkArgs, { shell: true }));
+  const checkExists = overrides.existsSync || existsSync;
+
+  // 1. If uv is installed (e.g. in CI or developer machine), run via uv run --frozen
+  try {
+    const uvCheck = spawnCheck('uv', ['--version']);
+    if (uvCheck && uvCheck.status === 0) {
+      return {
+        cmd: 'uv',
+        args: ['run', '--frozen', 'python', ...pythonArgs],
+      };
+    }
+  } catch {
+    // Ignore and proceed to check virtualenv
+  }
+
+  // 2. If .venv exists in workspace, use its python
+  const venvWin = join(process.cwd(), '.venv', 'Scripts', 'python.exe');
+  const venvUnix = join(process.cwd(), '.venv', 'bin', 'python');
+  if (checkExists(venvWin)) {
+    return { cmd: venvWin, args: pythonArgs };
+  }
+  if (checkExists(venvUnix)) {
+    return { cmd: venvUnix, args: pythonArgs };
+  }
+
+  // 3. Fallback to system python
+  return { cmd: 'python', args: pythonArgs };
+}
+
+export function runStep(name, cmd, cmdArgs) {
   console.log(`\n--- Running: ${name} ---`);
   const pathSep = process.platform === 'win32' ? ';' : ':';
   const customPythonPath = ['services/runtime/src', '.', process.env.PYTHONPATH]
@@ -48,6 +81,11 @@ function runStep(name, cmd, cmdArgs) {
   return true;
 }
 
+export function runPythonStep(name, pythonArgs) {
+  const resolved = resolvePythonRunner(pythonArgs);
+  return runStep(name, resolved.cmd, resolved.args);
+}
+
 function notImplemented(commandName, ownerPackage, plannedDoc) {
   console.error(`\n[iShop Command Contract] Error: '${commandName}' is not yet implemented.`);
   console.error(`Owner package: ${ownerPackage}`);
@@ -56,8 +94,16 @@ function notImplemented(commandName, ownerPackage, plannedDoc) {
   process.exit(1);
 }
 
-switch (command) {
-  case 'bootstrap': {
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+
+const currentFilePath = fileURLToPath(import.meta.url);
+const executedFilePath = process.argv[1] ? resolve(process.argv[1]) : '';
+const isMainModule = executedFilePath === currentFilePath;
+
+if (isMainModule) {
+  switch (command) {
+    case 'bootstrap': {
     console.log('[iShop] Bootstrapping workspace dependencies with reproducible locks...');
     // 1. Pnpm workspace dependencies
     runStep('pnpm install', 'pnpm', ['install']);
@@ -112,9 +158,8 @@ switch (command) {
     );
 
     // 2. Python tests (pytest discovering services/runtime and negative harness tests)
-    runStep(
+    runPythonStep(
       'Python Unit & Domain Tests',
-      'python',
       ['-m', 'pytest', 'services/runtime/tests', 'tests', 'evals/tests', '-v']
     );
 
@@ -137,9 +182,8 @@ switch (command) {
     );
 
     // 2. Python commerce catalog resolution and cart reconciliation integration tests
-    runStep(
+    runPythonStep(
       'Python Commerce & Reconciliation Integration Tests',
-      'python',
       ['-m', 'pytest', 'services/runtime/tests/test_commerce.py', '-v']
     );
 
@@ -163,9 +207,8 @@ switch (command) {
 
   case 'eval:validate': {
     console.log('[iShop] Validating evaluation manifest...');
-    runStep(
+    runPythonStep(
       'Evaluation Manifest Validation',
-      'python',
       ['-m', 'evals.cli.validate', ...args]
     );
 
@@ -179,9 +222,8 @@ switch (command) {
 
   case 'eval:run': {
     console.log('[iShop] Running evaluation suite...');
-    runStep(
+    runPythonStep(
       'Evaluation Run Execution',
-      'python',
       ['-m', 'evals.cli.run', ...args]
     );
 
@@ -195,9 +237,8 @@ switch (command) {
 
   case 'eval:report': {
     console.log('[iShop] Generating evaluation report...');
-    runStep(
+    runPythonStep(
       'Evaluation Report Generation',
-      'python',
       ['-m', 'evals.cli.report', ...args]
     );
 
@@ -214,4 +255,5 @@ switch (command) {
     console.error('Available commands: bootstrap, dev, check, test:unit, test:integration, test:e2e, test:live, eval:validate, eval:run, eval:report');
     process.exit(1);
   }
+}
 }

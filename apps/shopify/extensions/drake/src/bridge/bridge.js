@@ -10,7 +10,7 @@
 import { AjaxCartAdapter } from './ajax.js';
 import { StandardActionsAdapter } from './standard_actions.js';
 import { WebMcpAdapter } from './webmcp.js';
-import { isCartEquivalent } from '../../../../../../packages/contracts/src/index.js';
+import { isCartEquivalent } from '../../../../../../packages/contracts/src/browser.js';
 
 export class StorefrontBridge {
   constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null } = {}) {
