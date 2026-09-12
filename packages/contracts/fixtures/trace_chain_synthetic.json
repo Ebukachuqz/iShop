@@ -1,0 +1,71 @@
+{
+  "description": "Synthetic trace chain verifying complete lifecycle event sequence and privacy redactions (S-11, S-12).",
+  "events": [
+    {
+      "schema_version": "1.0.0",
+      "trace_id": "trc_001",
+      "session_id": "sess_0123456789abcdef",
+      "shop_id": "my-store.myshopify.com",
+      "turn_id": "turn_001",
+      "request_revision": 1,
+      "page_epoch": 1,
+      "stage": "turn_started",
+      "data_redacted": true,
+      "payload": {
+        "audio_stream_started": true,
+        "format": "pcm16_16khz"
+      },
+      "timestamp_utc": "2026-09-12T08:00:00.000Z"
+    },
+    {
+      "schema_version": "1.0.0",
+      "trace_id": "trc_002",
+      "session_id": "sess_0123456789abcdef",
+      "shop_id": "my-store.myshopify.com",
+      "turn_id": "turn_001",
+      "request_revision": 1,
+      "page_epoch": 1,
+      "stage": "transcript_accepted",
+      "data_redacted": true,
+      "payload": {
+        "transcript_length": 20,
+        "provider": "sahara"
+      },
+      "timestamp_utc": "2026-09-12T08:00:01.200Z"
+    },
+    {
+      "schema_version": "1.0.0",
+      "trace_id": "trc_003",
+      "session_id": "sess_0123456789abcdef",
+      "shop_id": "my-store.myshopify.com",
+      "turn_id": "turn_001",
+      "request_revision": 1,
+      "page_epoch": 1,
+      "stage": "command_dispatched",
+      "data_redacted": true,
+      "payload": {
+        "command_id": "cmd_0123456789abcdef",
+        "operation": "add_variant",
+        "variant_id": "gid://shopify/ProductVariant/123456"
+      },
+      "timestamp_utc": "2026-09-12T08:00:02.100Z"
+    },
+    {
+      "schema_version": "1.0.0",
+      "trace_id": "trc_004",
+      "session_id": "sess_0123456789abcdef",
+      "shop_id": "my-store.myshopify.com",
+      "turn_id": "turn_001",
+      "request_revision": 1,
+      "page_epoch": 1,
+      "stage": "execution_reconciled",
+      "data_redacted": true,
+      "payload": {
+        "command_id": "cmd_0123456789abcdef",
+        "outcome": "verified_success",
+        "cart_lines_count": 1
+      },
+      "timestamp_utc": "2026-09-12T08:00:02.800Z"
+    }
+  ]
+}

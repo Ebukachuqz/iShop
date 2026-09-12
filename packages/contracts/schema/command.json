@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/command.json",
+  "title": "AuthorizedCommand",
+  "description": "Strict closed-union command envelope emitted only by runtime verifier for execution on Shopify storefront. Enforces Safety S-01 (no payment/order/arbitrary script capability).",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0.0"]
+    },
+    "command_id": {
+      "type": "string",
+      "pattern": "^cmd_[a-zA-Z0-9_-]{16,}$"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^sess_[a-zA-Z0-9_-]{16,}$"
+    },
+    "shop_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9.-]+\\.myshopify\\.com$"
+    },
+    "turn_id": {
+      "type": "string"
+    },
+    "request_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "page_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expires_at_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expected_cart_fingerprint": {
+      "type": ["string", "null"]
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "search_catalog",
+        "browse_store",
+        "get_product",
+        "show_variant",
+        "read_cart",
+        "add_variant",
+        "set_line_quantity",
+        "remove_line",
+        "navigate_storefront",
+        "handoff_to_checkout"
+      ]
+    },
+    "parameters": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "command_id",
+    "session_id",
+    "shop_id",
+    "turn_id",
+    "request_revision",
+    "page_epoch",
+    "expires_at_ms",
+    "operation",
+    "parameters"
+  ],
+  "additionalProperties": false
+}

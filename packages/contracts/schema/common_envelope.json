@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/common_envelope.json",
+  "title": "CommonEnvelope",
+  "description": "Base envelope required for all events across browser, runtime, and evaluator boundaries.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0.0"]
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^evt_[a-zA-Z0-9_-]{16,}$"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^sess_[a-zA-Z0-9_-]{16,}$"
+    },
+    "shop_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9.-]+\\.myshopify\\.com$"
+    },
+    "turn_id": {
+      "type": ["string", "null"]
+    },
+    "request_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "page_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "producer": {
+      "type": "string",
+      "enum": ["storefront_widget", "runtime_orchestrator", "speech_adapter", "llm_adapter", "evaluator"]
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "monotonic_elapsed_ms": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "event_id",
+    "session_id",
+    "shop_id",
+    "request_revision",
+    "page_epoch",
+    "producer",
+    "timestamp_utc",
+    "monotonic_elapsed_ms"
+  ],
+  "additionalProperties": false
+}

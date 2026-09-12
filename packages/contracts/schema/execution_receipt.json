@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/execution_receipt.json",
+  "title": "ExecutionReceipt",
+  "description": "Authoritative receipt returned after attempting or reconciling a command execution against the Shopify store.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0.0"]
+    },
+    "receipt_id": {
+      "type": "string"
+    },
+    "command_id": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "verified_success",
+        "verified_no_op",
+        "rejected",
+        "canceled_before_dispatch",
+        "uncertain",
+        "failed_with_observed_change"
+      ]
+    },
+    "transport_used": {
+      "type": "string",
+      "enum": ["native_webmcp", "storefront_actions", "ajax_cart", "simulator"]
+    },
+    "before_cart_fingerprint": {
+      "type": ["string", "null"]
+    },
+    "after_cart_fingerprint": {
+      "type": ["string", "null"]
+    },
+    "verification_message": {
+      "type": "string"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dispatched_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "reconciled_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "schema_version",
+    "receipt_id",
+    "command_id",
+    "outcome",
+    "transport_used",
+    "verification_message",
+    "errors"
+  ],
+  "additionalProperties": false
+}

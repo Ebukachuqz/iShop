@@ -1,0 +1,29 @@
+{
+  "description": "Fixtures testing exact money arithmetic and ISO decimal exponent rules.",
+  "cases": [
+    {
+      "currency": "USD",
+      "amount_str": "19.99",
+      "expected_minor_units": 1999,
+      "decimals": 2
+    },
+    {
+      "currency": "NGN",
+      "amount_str": "15000.50",
+      "expected_minor_units": 1500050,
+      "decimals": 2
+    },
+    {
+      "currency": "JPY",
+      "amount_str": "2500",
+      "expected_minor_units": 2500,
+      "decimals": 0
+    },
+    {
+      "currency": "KWD",
+      "amount_str": "4.250",
+      "expected_minor_units": 4250,
+      "decimals": 3
+    }
+  ]
+}

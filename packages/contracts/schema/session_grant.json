@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/session_grant.json",
+  "title": "SessionGrant",
+  "description": "Short-lived signed runtime grant issued to the shopper browser for authenticating WSS connections and command dispatches.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0.0"]
+    },
+    "grant_id": {
+      "type": "string"
+    },
+    "shop_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9.-]+\\.myshopify\\.com$"
+    },
+    "permitted_origin": {
+      "type": "string",
+      "format": "uri"
+    },
+    "anonymous_session_id": {
+      "type": "string",
+      "pattern": "^sess_[a-zA-Z0-9_-]{16,}$"
+    },
+    "config_revision": {
+      "type": "string"
+    },
+    "issued_at_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expires_at_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "grant_id",
+    "shop_id",
+    "permitted_origin",
+    "anonymous_session_id",
+    "config_revision",
+    "issued_at_ms",
+    "expires_at_ms",
+    "signature"
+  ],
+  "additionalProperties": false
+}

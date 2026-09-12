@@ -1,0 +1,75 @@
+{
+  "description": "Fixtures testing canonical cart multiset equivalence and property normalization (T-25, S-08).",
+  "cart_a": {
+    "shop_id": "store.myshopify.com",
+    "currency": "USD",
+    "lines": [
+      {
+        "variant_id": "var_123",
+        "quantity": 2,
+        "selling_plan_id": null,
+        "properties": { "color": "blue", "size": "M" }
+      },
+      {
+        "variant_id": "var_456",
+        "quantity": 1,
+        "selling_plan_id": "plan_sub_monthly",
+        "properties": {}
+      }
+    ]
+  },
+  "cart_b_reordered_and_properties_unsorted": {
+    "shop_id": "store.myshopify.com",
+    "currency": "USD",
+    "lines": [
+      {
+        "variant_id": "var_456",
+        "quantity": 1,
+        "selling_plan_id": "plan_sub_monthly",
+        "properties": {}
+      },
+      {
+        "variant_id": "var_123",
+        "quantity": 2,
+        "selling_plan_id": null,
+        "properties": { "size": "M", "color": "blue" }
+      }
+    ]
+  },
+  "cart_c_different_plan": {
+    "shop_id": "store.myshopify.com",
+    "currency": "USD",
+    "lines": [
+      {
+        "variant_id": "var_123",
+        "quantity": 2,
+        "selling_plan_id": null,
+        "properties": { "color": "blue", "size": "M" }
+      },
+      {
+        "variant_id": "var_456",
+        "quantity": 1,
+        "selling_plan_id": "plan_sub_quarterly",
+        "properties": {}
+      }
+    ]
+  },
+  "cart_d_different_quantity": {
+    "shop_id": "store.myshopify.com",
+    "currency": "USD",
+    "lines": [
+      {
+        "variant_id": "var_123",
+        "quantity": 3,
+        "selling_plan_id": null,
+        "properties": { "color": "blue", "size": "M" }
+      },
+      {
+        "variant_id": "var_456",
+        "quantity": 1,
+        "selling_plan_id": "plan_sub_monthly",
+        "properties": {}
+      }
+    ]
+  }
+}

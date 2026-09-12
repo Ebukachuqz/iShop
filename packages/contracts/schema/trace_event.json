@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/trace_event.json",
+  "title": "TraceEvent",
+  "description": "Redacted lifecycle trace event for auditing and evaluation. Strictly excludes raw audio, credentials, and customer personal information.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0.0"]
+    },
+    "trace_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": ["string", "null"]
+    },
+    "episode_id": {
+      "type": ["string", "null"]
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "shop_id": {
+      "type": "string"
+    },
+    "turn_id": {
+      "type": ["string", "null"]
+    },
+    "request_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "page_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "turn_started",
+        "audio_received",
+        "transcript_accepted",
+        "intent_extracted",
+        "evidence_gathered",
+        "action_verified",
+        "command_dispatched",
+        "execution_reconciled",
+        "turn_completed",
+        "turn_canceled",
+        "checkout_handoff"
+      ]
+    },
+    "data_redacted": {
+      "type": "boolean"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "schema_version",
+    "trace_id",
+    "session_id",
+    "shop_id",
+    "request_revision",
+    "page_epoch",
+    "stage",
+    "data_redacted",
+    "payload",
+    "timestamp_utc"
+  ],
+  "additionalProperties": false
+}

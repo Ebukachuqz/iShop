@@ -1,0 +1,22 @@
+{
+  "description": "Fixtures testing scoped runtime grant validation, expiry, and tenancy rejection (T-15, T-22).",
+  "signing_secret": "test_secret_key_minimum_32_characters_long_12345",
+  "valid_grant": {
+    "grant_id": "grant_01h9xyz",
+    "shop_id": "my-store.myshopify.com",
+    "permitted_origin": "https://my-store.myshopify.com",
+    "anonymous_session_id": "sess_0123456789abcdef",
+    "config_revision": "rev_1",
+    "issued_at_ms": 1000000,
+    "expires_at_ms": 2800000
+  },
+  "expired_grant": {
+    "grant_id": "grant_02expired",
+    "shop_id": "my-store.myshopify.com",
+    "permitted_origin": "https://my-store.myshopify.com",
+    "anonymous_session_id": "sess_0123456789abcdef",
+    "config_revision": "rev_1",
+    "issued_at_ms": 100000,
+    "expires_at_ms": 200000
+  }
+}

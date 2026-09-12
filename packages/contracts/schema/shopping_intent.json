@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/shopping_intent.json",
+  "title": "ShoppingIntent",
+  "description": "Structured intent extracted from shopper speech, retaining transcript spans and language audit information.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0.0"]
+    },
+    "intent_id": {
+      "type": "string"
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "search",
+        "browse",
+        "describe_product",
+        "check_availability",
+        "view_cart",
+        "add_to_cart",
+        "update_quantity",
+        "remove_from_cart",
+        "navigate",
+        "request_checkout"
+      ]
+    },
+    "product_query": {
+      "type": ["string", "null"]
+    },
+    "selected_variant_attributes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "quantity_change": {
+      "type": ["object", "null"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["set", "increment"]
+        },
+        "value": {
+          "type": "integer"
+        }
+      },
+      "required": ["mode", "value"],
+      "additionalProperties": false
+    },
+    "target_line_key": {
+      "type": ["string", "null"]
+    },
+    "budget_constraint": {
+      "type": ["object", "null"],
+      "properties": {
+        "max_amount": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      },
+      "required": ["max_amount", "currency"],
+      "additionalProperties": false
+    },
+    "is_explicit_checkout_request": {
+      "type": "boolean"
+    },
+    "supporting_transcript_span": {
+      "type": "string"
+    },
+    "original_language_wording": {
+      "type": ["string", "null"]
+    },
+    "unresolved_fields": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "intent_id",
+    "operation",
+    "is_explicit_checkout_request",
+    "supporting_transcript_span",
+    "unresolved_fields"
+  ],
+  "additionalProperties": false
+}

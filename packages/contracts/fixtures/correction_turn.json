@@ -1,0 +1,28 @@
+{
+  "description": "Fixtures testing partial 'add medium' followed by final correction to 'large' creating only the final operation (T-04, S-05).",
+  "turn_id": "turn_001",
+  "steps": [
+    {
+      "step": 1,
+      "type": "partial",
+      "revision": 1,
+      "text": "add blue shirt medium"
+    },
+    {
+      "step": 2,
+      "type": "partial",
+      "revision": 1,
+      "text": "add blue shirt wait make it large"
+    },
+    {
+      "step": 3,
+      "type": "final",
+      "revision": 1,
+      "text": "add blue shirt large"
+    }
+  ],
+  "expected_final_variant_attribute": {
+    "size": "large",
+    "color": "blue"
+  }
+}
