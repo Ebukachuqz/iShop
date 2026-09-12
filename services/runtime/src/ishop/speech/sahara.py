@@ -27,6 +27,7 @@ def _http_post_multipart(
     provider_name: str = "sahara",
     filename: str = "audio.wav",
     mime_type: str = "audio/wav",
+    file_field: str = "file",
 ) -> dict[str, Any]:
     """Helper executing HTTP POST with multipart/form-data payload in worker thread."""
     boundary = f"ishop-{time.monotonic_ns()}"
@@ -39,7 +40,7 @@ def _http_post_multipart(
 
     body.extend(f"--{boundary}\r\n".encode("utf-8"))
     body.extend(
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode("utf-8")
+        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'.encode("utf-8")
     )
     body.extend(f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"))
     body.extend(audio_data)
@@ -79,18 +80,20 @@ class SaharaSpeechProvider(SpeechProvider):
         timeout_seconds: float = 15.0,
     ):
         self._api_key = api_key or os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY")
-        self._endpoint_url = endpoint_url or os.getenv("SAHARA_TRANSCRIBE_URL", "")
+        self._endpoint_url = endpoint_url or os.getenv(
+            "SAHARA_TRANSCRIBE_URL", "https://infer.voice.intron.io/file/v1/upload/sync"
+        )
         self._timeout_seconds = timeout_seconds
 
     @property
     def profile(self) -> SpeechProfile:
-        has_key = bool(self._api_key and self._endpoint_url)
+        has_key = bool(self._api_key)
         return SpeechProfile(
             profile_id="sahara-intron-asr",
             provider_name="sahara",
             model_name="competition-route-unverified",
             enabled=has_key,
-            disabled_reason=None if has_key else "SAHARA_API_KEY and verified SAHARA_TRANSCRIBE_URL are required",
+            disabled_reason=None if has_key else "SAHARA_API_KEY environment variable not set",
             supports_streaming=False,
             supports_code_switching=True,
             requires_api_key=True,
@@ -102,21 +105,21 @@ class SaharaSpeechProvider(SpeechProvider):
         sample_rate: int = 16000,
         language_hint: str | None = None,
     ) -> SpeechTranscriptionResult:
-        if not self._api_key or not self._endpoint_url:
+        if not self._api_key:
             raise SpeechProviderError(
-                "SAHARA_API_KEY or verified SAHARA_TRANSCRIBE_URL not configured",
+                "SAHARA_API_KEY not configured",
                 provider_name="sahara",
                 retryable=False,
             )
 
         headers = {"Authorization": f"Bearer {self._api_key}"}
         fields = {
-            "sample_rate": str(sample_rate),
-            "use_disable_llm_corrections": "true",
-            "category": "general",
+            "audio_file_name": "ishop-audio.wav",
+            "use_disable_llm_corrections": "TRUE",
+            "use_category": "file_category_general",
         }
         if language_hint:
-            fields["language_code"] = language_hint
+            fields["use_language_asr_input"] = language_hint.split("-")[0]
 
         start_time = time.monotonic()
         payload = await asyncio.to_thread(
@@ -127,12 +130,16 @@ class SaharaSpeechProvider(SpeechProvider):
             fields,
             self._timeout_seconds,
             "sahara",
+            "audio.wav",
+            "audio/wav",
+            "audio_file_blob",
         )
         elapsed = (time.monotonic() - start_time) * 1000.0
 
-        transcript = payload.get("transcript") or payload.get("text") or ""
-        lang = payload.get("language") or language_hint
-        conf = payload.get("confidence")
+        data = payload.get("data", {})
+        transcript = data.get("audio_transcript") or payload.get("transcript") or ""
+        lang = language_hint
+        conf = None
 
         return SpeechTranscriptionResult(
             transcript=transcript.strip(),
@@ -141,5 +148,5 @@ class SaharaSpeechProvider(SpeechProvider):
             latency_ms=elapsed,
             provider_name="sahara",
             model_name="competition-route-unverified",
-            raw_metadata={"request_id": payload.get("request_id")},
+            raw_metadata={"file_id": data.get("file_id"), "processing_status": data.get("processing_status")},
         )

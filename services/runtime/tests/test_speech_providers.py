@@ -64,7 +64,7 @@ def test_fake_speech_provider_transcription():
 def test_provider_transcribe_missing_key_raises_speech_provider_error():
     """T-14: Calling transcribe on an unconfigured provider raises SpeechProviderError."""
     sahara = SaharaSpeechProvider(api_key=None)
-    with pytest.raises(SpeechProviderError, match="SAHARA_API_KEY.*SAHARA_TRANSCRIBE_URL"):
+    with pytest.raises(SpeechProviderError, match="SAHARA_API_KEY not configured"):
         asyncio.run(sahara.transcribe(b"AUDIO_BYTES"))
 
     groq = GroqWhisperSpeechProvider(api_key=None)
@@ -100,7 +100,7 @@ def test_batch_profiles_name_exact_models_and_do_not_claim_streaming():
     assert all(profile.supports_streaming is False for profile in profiles)
 
 
-def test_sahara_requires_verified_route_as_well_as_key():
+def test_sahara_uses_verified_sync_route_by_default():
     provider = SaharaSpeechProvider(api_key="x", endpoint_url=None)
-    assert provider.profile.enabled is False
-    assert "SAHARA_TRANSCRIBE_URL" in (provider.profile.disabled_reason or "")
+    assert provider.profile.enabled is True
+    assert provider._endpoint_url == "https://infer.voice.intron.io/file/v1/upload/sync"
