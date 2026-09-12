@@ -9,6 +9,7 @@ Adheres to:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -34,6 +35,18 @@ from ishop.llm.prompts import (
 
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+
+def _http_post_json(url: str, payload_bytes: bytes, headers: dict[str, str], timeout_s: float) -> str:
+    """Execute blocking HTTP request in worker thread with timeout (R7)."""
+    req = urllib.request.Request(
+        url=url,
+        data=payload_bytes,
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        return resp.read().decode("utf-8")
 
 
 class GroqLlmProvider(LlmProvider):
@@ -102,19 +115,19 @@ class GroqLlmProvider(LlmProvider):
         }
 
         data_bytes = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url=GROQ_API_URL,
-            data=data_bytes,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._api_key}",
-            },
-            method="POST",
-        )
 
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                res_json = json.loads(resp.read().decode("utf-8"))
+            resp_body = await asyncio.to_thread(
+                _http_post_json,
+                GROQ_API_URL,
+                data_bytes,
+                {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._api_key}",
+                },
+                15.0,
+            )
+            res_json = json.loads(resp_body)
         except urllib.error.HTTPError as e:
             err_msg = e.read().decode("utf-8", errors="replace")
             raise LlmProviderError(
@@ -187,20 +200,20 @@ class GroqLlmProvider(LlmProvider):
         }
 
         data_bytes = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url=GROQ_API_URL,
-            data=data_bytes,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._api_key}",
-            },
-            method="POST",
-        )
 
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                res_json = json.loads(resp.read().decode("utf-8"))
-                return res_json["choices"][0]["message"]["content"].strip()
+            resp_body = await asyncio.to_thread(
+                _http_post_json,
+                GROQ_API_URL,
+                data_bytes,
+                {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._api_key}",
+                },
+                10.0,
+            )
+            res_json = json.loads(resp_body)
+            return res_json["choices"][0]["message"]["content"].strip()
         except Exception:
             if context.execution_receipt_summary:
                 return f"Done! {context.execution_receipt_summary}."

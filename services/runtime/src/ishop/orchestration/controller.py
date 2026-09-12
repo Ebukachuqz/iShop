@@ -75,6 +75,18 @@ INJECTION_PATTERNS = [
 ]
 
 
+@dataclass
+class ControllerSessionState:
+    """Session-scoped concurrency and freshness state (R2, S-09)."""
+
+    session_id: str
+    active_turn_id: str | None = None
+    latest_request_revision: int = 0
+    latest_page_epoch: int = 0
+    is_cancelled: bool = False
+    cancelled_turns: set[str] = field(default_factory=set)
+
+
 @dataclass(frozen=True)
 class ControllerTurnResult:
     """Outcome of a single shopping dialogue turn."""
@@ -83,7 +95,7 @@ class ControllerTurnResult:
     turn_id: str
     request_revision: int
     page_epoch: int
-    status: str  # "completed", "clarification_needed", "rejected", "stale", "error"
+    status: str  # "completed", "clarification_needed", "rejected", "stale", "cancelled", "error"
     spoken_response: str
     extracted_intent: ShoppingIntent | None = None
     receipt: ExecutionReceipt | None = None
@@ -105,11 +117,52 @@ class ShoppingController:
         self.reconciler = reconciler
         self.max_llm_retries = max_llm_retries
 
-        # Active session state tracking for revision and epoch bounds (T-11)
-        self._active_session_id: str | None = None
-        self._active_turn_id: str | None = None
-        self._active_request_revision: int = 0
-        self._active_page_epoch: int = 0
+        # Session-scoped state tracking for revision and epoch bounds (R2, T-11, T-17, S-09)
+        self._sessions: dict[str, ControllerSessionState] = {}
+
+    def get_session_state(self, session_id: str) -> ControllerSessionState:
+        """Get or initialize session-scoped state."""
+        if session_id not in self._sessions:
+            self._sessions[session_id] = ControllerSessionState(session_id=session_id)
+        return self._sessions[session_id]
+
+    def cancel_turn(self, session_id: str, turn_id: str) -> None:
+        """Cancel an in-flight or pending turn (R2, S-09)."""
+        sess = self.get_session_state(session_id)
+        sess.cancelled_turns.add(turn_id)
+
+    def cancel_session(self, session_id: str) -> None:
+        """Cancel all pending work in a session (R2, S-09)."""
+        sess = self.get_session_state(session_id)
+        sess.is_cancelled = True
+
+    def update_page_epoch(self, session_id: str, new_epoch: int) -> None:
+        """Record page navigation / epoch increment (R2, T-17, S-09)."""
+        sess = self.get_session_state(session_id)
+        if new_epoch > sess.latest_page_epoch:
+            sess.latest_page_epoch = new_epoch
+
+    def _check_turn_staleness(
+        self,
+        session_id: str,
+        turn_id: str,
+        request_revision: int,
+        page_epoch: int,
+    ) -> tuple[bool, str, str]:
+        """Check if turn is stale, cancelled, or epoch-superseded.
+
+        Returns (is_invalid, status, reason).
+        """
+        sess = self.get_session_state(session_id)
+        if sess.is_cancelled:
+            return True, "cancelled", "Session was cancelled (S-09)."
+        if turn_id in sess.cancelled_turns:
+            return True, "cancelled", f"Turn {turn_id} was cancelled (S-09)."
+        if page_epoch < sess.latest_page_epoch:
+            return True, "stale", f"Stale page epoch {page_epoch} < latest {sess.latest_page_epoch} (S-09, T-17)"
+        if request_revision < sess.latest_request_revision:
+            return True, "stale", f"Stale request revision {request_revision} < latest {sess.latest_request_revision} (S-09, T-11)"
+        return False, "", ""
 
     async def handle_turn(
         self,
@@ -127,29 +180,26 @@ class ShoppingController:
         """Handle an accepted final transcript through LLM reasoning, resolution, and execution."""
         now = now_ms if now_ms is not None else int(time.time() * 1000)
 
-        # 1. Turn revision and page epoch freshness check (T-11)
-        if (
-            self._active_session_id == session_id
-            and (
-                page_epoch < self._active_page_epoch
-                or request_revision < self._active_request_revision
-            )
-        ):
+        # 1. Turn revision and page epoch freshness check (T-11, T-17, S-09, R2)
+        is_invalid, status, reason = self._check_turn_staleness(
+            session_id, turn_id, request_revision, page_epoch
+        )
+        if is_invalid:
             return ControllerTurnResult(
                 session_id=session_id,
                 turn_id=turn_id,
                 request_revision=request_revision,
                 page_epoch=page_epoch,
-                status="stale",
-                spoken_response="This request was superseded by a newer turn.",
-                reason=f"Stale request revision {request_revision} < active {self._active_request_revision} (T-11)",
+                status=status,
+                spoken_response="This request was superseded by a newer turn or cancelled.",
+                reason=reason,
             )
 
-        # Update active turn pointers
-        self._active_session_id = session_id
-        self._active_turn_id = turn_id
-        self._active_request_revision = request_revision
-        self._active_page_epoch = page_epoch
+        # Update session active turn pointers
+        sess = self.get_session_state(session_id)
+        sess.active_turn_id = turn_id
+        sess.latest_request_revision = max(sess.latest_request_revision, request_revision)
+        sess.latest_page_epoch = max(sess.latest_page_epoch, page_epoch)
 
         # 2. Prompt injection defence pre-check (T-09)
         for pat in INJECTION_PATTERNS:
@@ -216,6 +266,21 @@ class ShoppingController:
                 status="error",
                 spoken_response="I had trouble processing that shopping request. Could you rephrase it?",
                 reason=f"LLM interpretation failure: {err_reason}",
+            )
+
+        # Re-check staleness/cancellation after async LLM reasoning (R2, S-09)
+        is_invalid, status, reason = self._check_turn_staleness(
+            session_id, turn_id, request_revision, page_epoch
+        )
+        if is_invalid:
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status=status,
+                spoken_response="This request was superseded by a newer turn or cancelled.",
+                reason=f"Aborted after async reasoning: {reason}",
             )
 
         intent = intent_result.intent
@@ -685,7 +750,21 @@ class ShoppingController:
                 properties={},  # R5: preserve genuine custom properties, do not turn variant options into properties
             )
 
-        # 8. Verify action through CartVerifier (T-05, T-10, S-08, S-09)
+        # 8. Re-check session freshness before CartVerifier (R2, S-09)
+        is_invalid, status, reason = self._check_turn_staleness(
+            session_id, turn_id, request_revision, page_epoch
+        )
+        if is_invalid:
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status=status,
+                spoken_response="Cart update aborted: superseded or cancelled.",
+                reason=f"Aborted immediately before cart verification: {reason}",
+            )
+
         verification = CartVerifier.verify_action(
             current_cart=current_cart,
             action=action,
@@ -711,7 +790,21 @@ class ShoppingController:
 
         cmd = verification.command
 
-        # 9. Execute through CommandReconciler if present
+        # 9. Re-check session freshness immediately before command authorization/dispatch (R2, S-09)
+        is_invalid, status, reason = self._check_turn_staleness(
+            session_id, turn_id, request_revision, page_epoch
+        )
+        if is_invalid:
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status=status,
+                spoken_response="Cart update aborted: superseded or cancelled.",
+                reason=f"Aborted immediately before command dispatch: {reason}",
+            )
+
         if not self.reconciler or not client:
             # In unit-test / offline mode without client: return authorized command directly
             item_name = f"{variant.product_title} - {variant.variant_title}" if variant else f"item {action.line_key or action.variant_id}"
@@ -778,6 +871,21 @@ class ShoppingController:
         intent: ShoppingIntent,
         current_cart: CartSnapshot,
     ) -> ControllerTurnResult:
+        # Re-check session freshness before checkout handoff (R2, S-09)
+        is_invalid, status, reason = self._check_turn_staleness(
+            session_id, turn_id, request_revision, page_epoch
+        )
+        if is_invalid:
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status=status,
+                spoken_response="Checkout request aborted: superseded or cancelled.",
+                reason=f"Aborted before checkout: {reason}",
+            )
+
         # Empty cart checkout refused (T-21)
         if not current_cart.lines:
             return ControllerTurnResult(
