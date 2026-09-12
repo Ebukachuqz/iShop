@@ -7,8 +7,8 @@ import { WebMcpAdapter } from '../../../apps/shopify/extensions/drake/src/bridge
 import { StorefrontBridge } from '../../../apps/shopify/extensions/drake/src/bridge/bridge.js';
 import { validateCommandSafety } from '../src/index.js';
 
-describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
-  describe('1. Signed Bootstrap & Origin Validation', () => {
+describe('WP-01 Shopify Transport & Security Contract Suite (Simulated Mocks)', () => {
+  describe('1. Signed Bootstrap & Origin Validation Contract', () => {
     const SECRET = 'a_very_secret_signing_key_that_is_at_least_32_bytes_long';
 
     function signPayload(grant, secret) {
@@ -24,7 +24,7 @@ describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
       return createHmac('sha256', secret).update(msg).digest('hex');
     }
 
-    test('signed bootstrap success produces verifiable HMAC grant', () => {
+    test('signed bootstrap produces verifiable HMAC grant matching runtime format', () => {
       const payload = {
         grant_id: 'grant_123',
         shop_id: 'drake-test.myshopify.com',
@@ -50,15 +50,15 @@ describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
         anonymous_session_id: 'sess_abc123',
         config_revision: 'default-v1',
         issued_at_ms: 1000,
-        expires_at_ms: 2000, // expired at 5000
+        expires_at_ms: 2000,
       };
       const realSignature = signPayload(payload, SECRET);
 
-      // 1. Forged secret
+      // Forged secret signature mismatch
       const forgedSig = signPayload(payload, 'wrong_secret_key_32_bytes_long_123456');
       assert.notEqual(forgedSig, realSignature, 'Forged signature must not match real signature');
 
-      // 2. Expired time check
+      // Expired timestamp
       const nowMs = 5000;
       assert.equal(nowMs > payload.expires_at_ms, true, 'Expired grant must be detected by timestamp check');
     });
@@ -93,6 +93,21 @@ describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
 
       await localeAdapter.changeLineQuantity({ lineKey: 'line_1', quantity: 3 });
       assert.equal(requestedUrls[2], '/en/cart/change.js', 'changeLineQuantity must request /en/cart/change.js');
+    });
+
+    test('AjaxCartAdapter falls back to empty prefix when no locale configured', async () => {
+      const requestedUrls = [];
+      const mockFetch = async (url) => {
+        requestedUrls.push(url);
+        return {
+          ok: true,
+          json: async () => ({ currency: 'USD', items: [] }),
+        };
+      };
+
+      const rootAdapter = new AjaxCartAdapter('', mockFetch, 'store.myshopify.com');
+      await rootAdapter.readCart();
+      assert.equal(requestedUrls[0], '/cart.js');
     });
   });
 
@@ -160,7 +175,52 @@ describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
       assert.equal(lineVariantIds.includes('var_shirt'), true, 'New shirt must be added');
     });
 
-    test('absolute quantity semantics apply for set_line_quantity and remove_line', async () => {
+    test('remove_line removes only targeted line and preserves remaining lines', async () => {
+      let cartState = {
+        shop_id: 'drake-test.myshopify.com',
+        currency: 'USD',
+        items: [
+          { key: 'line_gloves', variant_id: 'var_gloves', quantity: 1, properties: {} },
+          { key: 'line_boots', variant_id: 'var_boots', quantity: 1, properties: {} },
+        ],
+      };
+
+      const mockFetch = async (url, opts) => {
+        if (url.endsWith('/cart.js')) {
+          return { ok: true, json: async () => cartState };
+        }
+        if (url.endsWith('/cart/change.js')) {
+          const body = JSON.parse(opts.body);
+          const idx = cartState.items.findIndex((i) => i.key === body.id);
+          if (idx !== -1 && body.quantity === 0) {
+            cartState.items.splice(idx, 1);
+          }
+          return { ok: true, json: async () => ({ ok: true }) };
+        }
+        return { ok: false, status: 404 };
+      };
+
+      const ajaxAdapter = new AjaxCartAdapter('', mockFetch, 'drake-test.myshopify.com');
+      const bridge = new StorefrontBridge({
+        ajaxAdapter,
+        webMcpAdapter: { isAvailable: () => false },
+        actionsAdapter: { isAvailable: () => false },
+      });
+
+      const removeCmd = {
+        command_id: 'cmd_rem_01',
+        operation: 'remove_line',
+        parameters: { target_line_key: 'line_gloves' },
+      };
+
+      const removeReceipt = await bridge.executeCommand(removeCmd);
+      assert.equal(removeReceipt.ok, true);
+      assert.equal(removeReceipt.outcome, 'verified_success');
+      assert.equal(removeReceipt.after_cart.lines.length, 1);
+      assert.equal(removeReceipt.after_cart.lines[0].variant_id, 'var_boots', 'Unrelated boots line must remain');
+    });
+
+    test('absolute quantity semantics apply for set_line_quantity', async () => {
       let cartState = {
         shop_id: 'drake-test.myshopify.com',
         currency: 'NGN',
@@ -175,11 +235,7 @@ describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
         }
         if (url.endsWith('/cart/change.js')) {
           const body = JSON.parse(opts.body);
-          if (body.quantity === 0) {
-            cartState.items = [];
-          } else {
-            cartState.items[0].quantity = body.quantity;
-          }
+          cartState.items[0].quantity = body.quantity;
           return { ok: true, json: async () => ({ ok: true }) };
         }
         return { ok: false, status: 404 };
@@ -192,7 +248,6 @@ describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
         actionsAdapter: { isAvailable: () => false },
       });
 
-      // Set line quantity to 3 (absolute 3, not relative +3)
       const setCmd = {
         command_id: 'cmd_set_01',
         operation: 'set_line_quantity',
@@ -203,9 +258,101 @@ describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
       assert.equal(setReceipt.ok, true);
       assert.equal(setReceipt.after_cart.lines[0].quantity, 3, 'Quantity must be set absolutely to 3');
     });
+
+    test('uncertain-write behavior: dispatch network failure marks outcome uncertain without retrying', async () => {
+      let fallbackCalls = 0;
+      const failingAjax = {
+        addVariant: async () => {
+          throw new Error('ETIMEDOUT: Connection severed mid-flight');
+        },
+        readCart: async () => ({
+          shop_id: 'drake-test.myshopify.com',
+          currency: 'USD',
+          lines: [],
+        }),
+      };
+
+      const fallbackAdapter = {
+        addVariant: async () => {
+          fallbackCalls++;
+          return { ok: true };
+        },
+      };
+
+      const bridge = new StorefrontBridge({
+        ajaxAdapter: failingAjax,
+        webMcpAdapter: { isAvailable: () => false },
+        actionsAdapter: { isAvailable: () => false },
+      });
+
+      const addCmd = {
+        command_id: 'cmd_unc_01',
+        operation: 'add_variant',
+        parameters: { variant_id: 'var_hoodie', quantity: 1 },
+      };
+
+      const receipt = await bridge.executeCommand(addCmd);
+      assert.equal(receipt.ok, false);
+      assert.equal(receipt.outcome, 'uncertain');
+      assert.equal(fallbackCalls, 0, 'Must never retry an uncertain write on another transport');
+    });
   });
 
-  describe('4. Inventory Shortage & Error Handling', () => {
+  describe('4. Direct StandardActionsAdapter Tests', () => {
+    test('isAvailable returns false when window.Shopify.actions is undefined', () => {
+      const adapter = new StandardActionsAdapter(null);
+      assert.equal(adapter.isAvailable(), false);
+    });
+
+    test('isAvailable returns true when updateCart function exists', () => {
+      const mockActions = { updateCart: async () => ({}) };
+      const adapter = new StandardActionsAdapter(mockActions);
+      assert.equal(adapter.isAvailable(), true);
+    });
+
+    test('updateCart extracts userErrors and warnings', async () => {
+      const mockActions = {
+        updateCart: async () => ({
+          userErrors: [{ message: 'Variant is out of stock' }],
+          warnings: [{ message: 'Quantity reduced' }],
+        }),
+      };
+      const adapter = new StandardActionsAdapter(mockActions);
+      const res = await adapter.updateCart({ lines: [] });
+
+      assert.equal(res.ok, false);
+      assert.deepEqual(res.errors, ['Variant is out of stock']);
+      assert.deepEqual(res.warnings, ['Quantity reduced']);
+    });
+
+    test('normalizeCart normalizes attributes to canonical properties map', () => {
+      const adapter = new StandardActionsAdapter(null);
+      const raw = {
+        shop_id: 'test.myshopify.com',
+        cost: { totalAmount: { currencyCode: 'EUR' } },
+        lines: [
+          {
+            id: 'line_act_1',
+            merchandise: { id: 'var_99' },
+            quantity: 2,
+            attributes: [
+              { key: 'Color', value: 'Blue' },
+              { key: 'Size', value: 'L' },
+            ],
+          },
+        ],
+      };
+
+      const normalized = adapter.normalizeCart(raw);
+      assert.equal(normalized.currency, 'EUR');
+      assert.equal(normalized.lines[0].line_key, 'line_act_1');
+      assert.equal(normalized.lines[0].variant_id, 'var_99');
+      assert.equal(normalized.lines[0].quantity, 2);
+      assert.deepEqual(normalized.lines[0].properties, { Color: 'Blue', Size: 'L' });
+    });
+  });
+
+  describe('5. Inventory Shortage & Error Handling', () => {
     test('explicit inventory shortage returns rejected receipt without cart mutation', async () => {
       const mockFetch = async (url) => {
         if (url.endsWith('/cart.js')) {
@@ -249,7 +396,7 @@ describe('WP-01 Shopify Transport & Security Boundary Suite', () => {
     });
   });
 
-  describe('5. Checkout Handoff Boundary', () => {
+  describe('6. Checkout Handoff Boundary', () => {
     test('handoff_to_checkout command passes safety validation and stops before payment', () => {
       const checkoutCmd = {
         schema_version: '1.0.0',
