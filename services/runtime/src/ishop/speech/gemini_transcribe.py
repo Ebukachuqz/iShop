@@ -65,7 +65,7 @@ def _gemini_transcribe_worker(api_key: str, audio_data: bytes, model_name: str,
 class GeminiSpeechProvider(SpeechProvider):
     def __init__(self, api_key: str | None = None, model_name: str = "gemini-3.5-transcribe",
                  timeout_seconds: float = 60.0):
-        self._api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self._api_key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY")
         self._model_name = model_name
         self._timeout_seconds = timeout_seconds
 

@@ -29,7 +29,7 @@ class GroqWhisperSpeechProvider(SpeechProvider):
         endpoint_url: str = "https://api.groq.com/openai/v1/audio/transcriptions",
         timeout_seconds: float = 15.0,
     ):
-        self._api_key = api_key or os.getenv("GROQ_API_KEY")
+        self._api_key = api_key if api_key is not None else os.getenv("GROQ_API_KEY")
         self._model_name = model_name
         self._endpoint_url = endpoint_url
         self._timeout_seconds = timeout_seconds

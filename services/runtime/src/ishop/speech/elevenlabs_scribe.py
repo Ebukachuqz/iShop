@@ -29,7 +29,7 @@ class ElevenLabsScribeSpeechProvider(SpeechProvider):
         endpoint_url: str = "https://api.elevenlabs.io/v1/speech-to-text",
         timeout_seconds: float = 15.0,
     ):
-        self._api_key = api_key or os.getenv("ELEVENLABS_API_KEY")
+        self._api_key = api_key if api_key is not None else os.getenv("ELEVENLABS_API_KEY")
         self._model_name = model_name
         self._endpoint_url = endpoint_url
         self._timeout_seconds = timeout_seconds

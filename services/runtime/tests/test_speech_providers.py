@@ -26,8 +26,22 @@ def test_speech_registry_registration_and_listing():
     assert "fake-speech-offline" in profile_ids
 
 
-def test_missing_api_keys_report_disabled_with_reason():
+def _clear_speech_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in [
+        "SAHARA_API_KEY",
+        "INTRON_API_KEY",
+        "GROQ_API_KEY",
+        "ASSEMBLYAI_API_KEY",
+        "ASSEMBLY_AI_API_KEY",
+        "GEMINI_API_KEY",
+        "ELEVENLABS_API_KEY",
+    ]:
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_missing_api_keys_report_disabled_with_reason(monkeypatch: pytest.MonkeyPatch):
     """T-30: Providers without API keys report enabled=False with clear disabled reason."""
+    _clear_speech_env_vars(monkeypatch)
     sahara = SaharaSpeechProvider(api_key=None)
     assert sahara.profile.enabled is False
     assert "SAHARA_API_KEY" in (sahara.profile.disabled_reason or "")
@@ -61,8 +75,9 @@ def test_fake_speech_provider_transcription():
     assert result.latency_ms >= 0.0
 
 
-def test_provider_transcribe_missing_key_raises_speech_provider_error():
+def test_provider_transcribe_missing_key_raises_speech_provider_error(monkeypatch: pytest.MonkeyPatch):
     """T-14: Calling transcribe on an unconfigured provider raises SpeechProviderError."""
+    _clear_speech_env_vars(monkeypatch)
     sahara = SaharaSpeechProvider(api_key=None)
     with pytest.raises(SpeechProviderError, match="SAHARA_API_KEY not configured"):
         asyncio.run(sahara.transcribe(b"AUDIO_BYTES"))
@@ -70,6 +85,13 @@ def test_provider_transcribe_missing_key_raises_speech_provider_error():
     groq = GroqWhisperSpeechProvider(api_key=None)
     with pytest.raises(SpeechProviderError, match="GROQ_API_KEY not configured"):
         asyncio.run(groq.transcribe(b"AUDIO_BYTES"))
+
+
+def test_outbound_network_traffic_blocked_in_unit_tests():
+    """Regression test ensuring unit tests fail if an outbound network connection is attempted."""
+    with pytest.raises(RuntimeError, match="Outbound network connection blocked"):
+        import urllib.request
+        urllib.request.urlopen("https://infer.voice.intron.io/health", timeout=0.1)
 
 
 def test_active_speech_provider_selection():

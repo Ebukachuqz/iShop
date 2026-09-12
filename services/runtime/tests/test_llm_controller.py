@@ -411,8 +411,10 @@ def test_t28_structured_output_bounded_retry_on_malformed_json(store_evidence, e
     assert fake_llm.invocation_count == 2  # Proves 1 retry occurred
 
 
-def test_t30_provider_registry_independence_and_missing_keys():
+def test_t30_provider_registry_independence_and_missing_keys(monkeypatch: pytest.MonkeyPatch):
     """T-30: Missing API keys report unavailable with recorded reason; registry does not crash."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     registry = LlmRegistry()
 
     # Gemini without key

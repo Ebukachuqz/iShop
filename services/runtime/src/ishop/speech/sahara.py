@@ -80,7 +80,7 @@ class SaharaSpeechProvider(SpeechProvider):
         endpoint_url: str | None = None,
         timeout_seconds: float = 15.0,
     ):
-        self._api_key = api_key or os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY")
+        self._api_key = api_key if api_key is not None else (os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY"))
         self._endpoint_url = endpoint_url or os.getenv(
             "SAHARA_TRANSCRIBE_URL", "https://infer.voice.intron.io/file/v1/upload/sync"
         )

@@ -8,8 +8,23 @@
 
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+
+function findTestFiles(dir) {
+  if (!existsSync(dir)) return [];
+  const results = [];
+  const entries = readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...findTestFiles(fullPath));
+    } else if (entry.isFile() && entry.name.endsWith('.test.js')) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
 
 const command = process.argv[2];
 const args = process.argv.slice(3);
@@ -157,10 +172,11 @@ if (isMainModule) {
     console.log('[iShop] Running offline unit and domain tests across JavaScript and Python...');
 
     // 1. JavaScript tests (Node.js test runner)
+    const jsTestFiles = findTestFiles('packages/contracts/tests');
     runStep(
       'JavaScript Unit & Contract Tests',
       'node',
-      ['--test', 'packages/contracts/tests/*.test.js']
+      ['--test', ...jsTestFiles]
     );
 
     runStep(

@@ -60,7 +60,7 @@ class GeminiLlmProvider(LlmProvider):
         model_name: str | None = None,
         profile_id: str = "gemini-flash",
     ):
-        key = api_key or os.environ.get("GEMINI_API_KEY")
+        key = api_key if api_key is not None else os.environ.get("GEMINI_API_KEY")
         model = model_name or os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
 
         enabled = bool(key and not key.startswith("test-") and not key.startswith("mock-"))

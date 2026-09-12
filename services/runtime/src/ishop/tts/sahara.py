@@ -118,7 +118,7 @@ class SaharaTtsProvider(TtsProvider):
         endpoint_url: str | None = None,
         connector: Callable[..., Any] | None = None,
     ):
-        self._api_key = api_key or os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY")
+        self._api_key = api_key if api_key is not None else (os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY"))
         self._language = language
         self._accent = accent
         self._gender = gender

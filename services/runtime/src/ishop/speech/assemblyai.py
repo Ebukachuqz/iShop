@@ -89,7 +89,7 @@ class AssemblyAiSpeechProvider(SpeechProvider):
         api_key: str | None = None,
         timeout_seconds: float = 15.0,
     ):
-        self._api_key = api_key or os.getenv("ASSEMBLYAI_API_KEY") or os.getenv("ASSEMBLY_AI_API_KEY")
+        self._api_key = api_key if api_key is not None else (os.getenv("ASSEMBLYAI_API_KEY") or os.getenv("ASSEMBLY_AI_API_KEY"))
         self._timeout_seconds = timeout_seconds
 
     @property

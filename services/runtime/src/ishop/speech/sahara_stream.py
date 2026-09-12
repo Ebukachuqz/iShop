@@ -53,7 +53,7 @@ class SaharaStreamingSession(RealtimeSpeechSession):
         endpoint_url: str | None = None,
         connector: Callable[..., Any] | None = None,
     ):
-        self._api_key = api_key or os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY")
+        self._api_key = api_key if api_key is not None else (os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY"))
         self._revision = revision
         self._language = language
         self._sample_rate = sample_rate
