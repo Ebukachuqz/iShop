@@ -1,0 +1,33 @@
+[project]
+name = "ishop-workspace"
+version = "0.1.0"
+description = "Drake — Voice shopping assistant workspace"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv.workspace]
+members = [
+    "services/runtime",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["services/runtime/src"]
+testpaths = ["services/runtime/tests"]
+python_files = ["test_*.py", "*_test.py"]
+addopts = "-v"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    "docs/research/archive",
+    "docs/research/sources",
+    "data/private",
+    "evals/private",
+    "artifacts/private",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = []

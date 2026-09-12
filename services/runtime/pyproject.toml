@@ -1,0 +1,13 @@
+[project]
+name = "ishop-runtime"
+version = "0.1.0"
+description = "FastAPI and Pipecat voice runtime for iShop (Drake)"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

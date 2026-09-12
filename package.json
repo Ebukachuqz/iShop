@@ -1,0 +1,24 @@
+{
+  "name": "ishop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Drake — Merchant-installed voice shopping assistant for Shopify",
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20.10.0 <23.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "bootstrap": "node scripts/command-dispatcher.mjs bootstrap",
+    "dev": "node scripts/command-dispatcher.mjs dev",
+    "check": "node scripts/command-dispatcher.mjs check",
+    "test:unit": "node scripts/command-dispatcher.mjs test:unit",
+    "test:integration": "node scripts/command-dispatcher.mjs test:integration",
+    "test:e2e": "node scripts/command-dispatcher.mjs test:e2e",
+    "test:live": "node scripts/command-dispatcher.mjs test:live",
+    "eval:validate": "node scripts/command-dispatcher.mjs eval:validate",
+    "eval:run": "node scripts/command-dispatcher.mjs eval:run",
+    "eval:report": "node scripts/command-dispatcher.mjs eval:report"
+  }
+}
