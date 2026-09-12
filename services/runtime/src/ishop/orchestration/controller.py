@@ -334,47 +334,83 @@ class ShoppingController:
         intent: ShoppingIntent,
         evidence: EvidenceSnapshot,
     ) -> ControllerTurnResult:
-        products = list(evidence.products.values())
-        if "compare" in (intent.product_query or "").lower() or len(products) >= 2:
-            # Two-product side-by-side comparison (WP-09 task 4)
-            p1 = products[0]
-            p2 = products[1] if len(products) > 1 else products[0]
-            desc = (
-                f"Comparing {p1.title} and {p2.title}: "
-                f"{p1.title} is priced at {p1.variants[0].price} with options {', '.join(p1.options or ['standard'])}; "
-                f"{p2.title} is priced at {p2.variants[0].price} with options {', '.join(p2.options or ['standard'])}."
-            )
+        query = (intent.product_query or "").strip().lower()
+        is_explicit_compare = (
+            "compare" in query
+            or "comparison" in query
+            or "vs" in query
+            or "difference between" in query
+        )
+
+        all_products = list(evidence.products.values())
+        if not all_products:
             return ControllerTurnResult(
                 session_id=session_id,
                 turn_id=turn_id,
                 request_revision=request_revision,
                 page_epoch=page_epoch,
                 status="completed",
-                spoken_response=desc,
+                spoken_response="There are no products in the catalog to describe.",
                 extracted_intent=intent,
             )
 
-        if products:
-            p = products[0]
-            opts = ", ".join(p.options) if p.options else "standard"
-            desc = f"{p.title} is {p.variants[0].price}, available in {opts}."
-            return ControllerTurnResult(
-                session_id=session_id,
-                turn_id=turn_id,
-                request_revision=request_revision,
-                page_epoch=page_epoch,
-                status="completed",
-                spoken_response=desc,
-                extracted_intent=intent,
-            )
+        if is_explicit_compare:
+            # Find which products were requested to compare
+            matching: list[ProductEvidence] = []
+            for p in all_products:
+                if p.title.lower() in query:
+                    matching.append(p)
+            if len(matching) < 2 and len(all_products) >= 2:
+                matching = all_products[:2]
 
+            if len(matching) >= 2:
+                p1, p2 = matching[0], matching[1]
+                desc = (
+                    f"Comparing {p1.title} and {p2.title}: "
+                    f"{p1.title} is priced at {p1.variants[0].price} with options {', '.join(p1.options or ['standard'])}; "
+                    f"{p2.title} is priced at {p2.variants[0].price} with options {', '.join(p2.options or ['standard'])}."
+                )
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="completed",
+                    spoken_response=desc,
+                    extracted_intent=intent,
+                )
+
+        # Single product describe request (R9)
+        if query:
+            matching = [
+                p for p in all_products
+                if query in p.title.lower() or p.title.lower() in query
+            ]
+            if matching:
+                p = matching[0]
+                opts = ", ".join(p.options) if p.options else "standard"
+                desc = f"{p.title} is {p.variants[0].price}, available in {opts}."
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="completed",
+                    spoken_response=desc,
+                    extracted_intent=intent,
+                )
+
+        # Default: describe first product
+        p = all_products[0]
+        opts = ", ".join(p.options) if p.options else "standard"
+        desc = f"{p.title} is {p.variants[0].price}, available in {opts}."
         return ControllerTurnResult(
             session_id=session_id,
             turn_id=turn_id,
             request_revision=request_revision,
             page_epoch=page_epoch,
             status="completed",
-            spoken_response="There are no products in the catalog to describe.",
+            spoken_response=desc,
             extracted_intent=intent,
         )
 
@@ -454,66 +490,200 @@ class ShoppingController:
             quantity=max(1, qty),
         )
 
-        # 6. Resolve through proven CatalogResolver (T-02, T-03, S-03, S-04, T-07)
-        resolution = CatalogResolver.resolve(
-            evidence=evidence,
-            target=target,
-            expected_shop_id=evidence.shop_id,
-            expected_currency=evidence.currency,
-        )
-
-        if resolution.status == ResolutionStatus.CLARIFY:
-            # Focused clarification question (T-03, S-04)
-            missing = ", ".join(resolution.missing_options)
-            opts = [f"{v.variant_title}" for v in resolution.candidate_variants[:4]]
-            spoken = f"Please select your {missing}. Options include: {', '.join(opts)}."
-            return ControllerTurnResult(
-                session_id=session_id,
-                turn_id=turn_id,
-                request_revision=request_revision,
-                page_epoch=page_epoch,
-                status="clarification_needed",
-                spoken_response=spoken,
-                extracted_intent=intent,
-                clarification_options=tuple(opts),
-                reason=resolution.reason,
-            )
-
-        elif resolution.status == ResolutionStatus.REJECT:
-            # Truthful rejection (T-02, T-07, S-04)
-            spoken = f"I cannot add that: {resolution.reason}."
-            return ControllerTurnResult(
-                session_id=session_id,
-                turn_id=turn_id,
-                request_revision=request_revision,
-                page_epoch=page_epoch,
-                status="rejected",
-                spoken_response=spoken,
-                extracted_intent=intent,
-                reason=resolution.reason,
-            )
-
-        # Exactly resolved variant
-        variant = resolution.variant
-        assert variant is not None
-
-        # 7. Map quantity operation (T-05)
-        if intent.operation == IntentOperation.REMOVE_FROM_CART or (
+        is_removal = intent.operation == IntentOperation.REMOVE_FROM_CART or (
             intent.quantity_change and intent.quantity_change.value == 0
-        ):
-            q_op = QuantityOperation.REMOVE
-        elif intent.quantity_change and intent.quantity_change.mode == "set":
-            q_op = QuantityOperation.SET
-        else:
-            q_op = QuantityOperation.INCREMENT
-
-        action = ProposedCartAction(
-            operation=q_op,
-            variant_id=variant.variant_id,
-            line_key=intent.target_line_key,
-            quantity=target.quantity,
-            properties=variant.selected_options,
         )
+
+        variant = None
+        target_line = None
+
+        if is_removal:
+            # Match existing line in current_cart by key, product_query, or variant attributes
+            matching_lines: list[CartLine] = []
+            if intent.target_line_key:
+                matching_lines = [
+                    l for l in current_cart.lines
+                    if l.canonical_key == intent.target_line_key
+                    or getattr(l, "shopify_line_key", None) == intent.target_line_key
+                    or l.variant_id == intent.target_line_key
+                ]
+            if not matching_lines and intent.product_query:
+                pq = intent.product_query.lower()
+                matching_prod_ids = {
+                    p.product_id for p in evidence.products.values()
+                    if pq in p.title.lower() or p.title.lower() in pq
+                }
+                matching_variant_ids = {
+                    v.variant_id for p in evidence.products.values()
+                    if p.product_id in matching_prod_ids
+                    for v in p.variants
+                }
+                matching_lines = [l for l in current_cart.lines if l.variant_id in matching_variant_ids]
+
+            if not matching_lines:
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="rejected",
+                    spoken_response=f"There is no {intent.product_query or 'item'} in your cart to remove.",
+                    extracted_intent=intent,
+                    reason="Target item for removal not found in current cart (T-05)",
+                )
+
+            if len(matching_lines) > 1 and intent.selected_variant_attributes:
+                filtered = []
+                for line in matching_lines:
+                    v_ev = None
+                    for p in evidence.products.values():
+                        for v in p.variants:
+                            if v.variant_id == line.variant_id:
+                                v_ev = v
+                                break
+                        if v_ev:
+                            break
+                    if v_ev and all(
+                        v_ev.selected_options.get(k.lower()) == val.lower()
+                        for k, val in intent.selected_variant_attributes.items()
+                    ):
+                        filtered.append(line)
+                if len(filtered) == 1:
+                    matching_lines = filtered
+
+            if len(matching_lines) > 1:
+                opts = [l.variant_id for l in matching_lines]
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="clarification_needed",
+                    spoken_response=f"You have multiple {intent.product_query} items in your cart. Which one would you like to remove?",
+                    extracted_intent=intent,
+                    clarification_options=tuple(opts),
+                    reason="Multiple matching cart lines for removal require clarification (T-03)",
+                )
+
+            target_line = matching_lines[0]
+            action = ProposedCartAction(
+                operation=QuantityOperation.REMOVE,
+                variant_id=target_line.variant_id,
+                line_key=target_line.canonical_key,
+                quantity=0,
+                properties=target_line.properties,
+                selling_plan_id=target_line.selling_plan_id,
+            )
+        else:
+            # 6. Resolve through proven CatalogResolver (T-02, T-03, S-03, S-04, T-07)
+            resolution = CatalogResolver.resolve(
+                evidence=evidence,
+                target=target,
+                expected_shop_id=evidence.shop_id,
+                expected_currency=evidence.currency,
+            )
+
+            if resolution.status == ResolutionStatus.CLARIFY:
+                # Focused clarification question (T-03, S-04)
+                missing = ", ".join(resolution.missing_options)
+                opts = [f"{v.variant_title}" for v in resolution.candidate_variants[:4]]
+                spoken = f"Please select your {missing}. Options include: {', '.join(opts)}."
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="clarification_needed",
+                    spoken_response=spoken,
+                    extracted_intent=intent,
+                    clarification_options=tuple(opts),
+                    reason=resolution.reason,
+                )
+
+            elif resolution.status == ResolutionStatus.REJECT:
+                # Truthful rejection (T-02, T-07, S-04)
+                spoken = f"I cannot add that: {resolution.reason}."
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="rejected",
+                    spoken_response=spoken,
+                    extracted_intent=intent,
+                    reason=resolution.reason,
+                )
+
+            # Exactly resolved variant
+            variant = resolution.variant
+            assert variant is not None
+
+            # Enforce budget constraint (R4, T-06)
+            if intent.budget_constraint:
+                try:
+                    budget_money = Money.from_string(
+                        intent.budget_constraint.max_amount,
+                        intent.budget_constraint.currency,
+                    )
+                    if variant.price.currency != budget_money.currency:
+                        return ControllerTurnResult(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            request_revision=request_revision,
+                            page_epoch=page_epoch,
+                            status="rejected",
+                            spoken_response=f"Currency mismatch: your budget is in {budget_money.currency}, but this store prices items in {variant.price.currency}.",
+                            extracted_intent=intent,
+                            reason=f"Budget currency mismatch: {budget_money.currency} vs {variant.price.currency}",
+                        )
+                    if variant.price > budget_money:
+                        return ControllerTurnResult(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            request_revision=request_revision,
+                            page_epoch=page_epoch,
+                            status="rejected",
+                            spoken_response=f"I cannot add {variant.product_title} ({variant.variant_title}) because its price of {variant.price} exceeds your budget limit of {budget_money}.",
+                            extracted_intent=intent,
+                            reason=f"Variant price {variant.price} exceeds budget constraint {budget_money} (T-06)",
+                        )
+                    total_cost = variant.price * target.quantity
+                    if total_cost > budget_money and target.quantity > 1:
+                        return ControllerTurnResult(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            request_revision=request_revision,
+                            page_epoch=page_epoch,
+                            status="rejected",
+                            spoken_response=f"Adding {target.quantity} of {variant.product_title} totals {total_cost}, which exceeds your budget limit of {budget_money}.",
+                            extracted_intent=intent,
+                            reason=f"Total cost {total_cost} exceeds budget constraint {budget_money} (T-06)",
+                        )
+                except Exception as e:
+                    return ControllerTurnResult(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        request_revision=request_revision,
+                        page_epoch=page_epoch,
+                        status="rejected",
+                        spoken_response=f"Invalid budget constraint: {e}",
+                        extracted_intent=intent,
+                        reason=f"Budget constraint parsing error: {e}",
+                    )
+
+            # 7. Map quantity operation (T-05)
+            if intent.quantity_change and intent.quantity_change.mode == "set":
+                q_op = QuantityOperation.SET
+            else:
+                q_op = QuantityOperation.INCREMENT
+
+            action = ProposedCartAction(
+                operation=q_op,
+                variant_id=variant.variant_id,
+                line_key=intent.target_line_key,
+                quantity=target.quantity,
+                properties={},  # R5: preserve genuine custom properties, do not turn variant options into properties
+            )
 
         # 8. Verify action through CartVerifier (T-05, T-10, S-08, S-09)
         verification = CartVerifier.verify_action(
@@ -544,7 +714,8 @@ class ShoppingController:
         # 9. Execute through CommandReconciler if present
         if not self.reconciler or not client:
             # In unit-test / offline mode without client: return authorized command directly
-            spoken = f"Prepared verified action for {variant.product_title} - {variant.variant_title}."
+            item_name = f"{variant.product_title} - {variant.variant_title}" if variant else f"item {action.line_key or action.variant_id}"
+            spoken = f"Prepared verified action for {item_name}."
             return ControllerTurnResult(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -565,10 +736,11 @@ class ShoppingController:
         if receipt.outcome in (ExecutionOutcome.VERIFIED_SUCCESS, ExecutionOutcome.VERIFIED_NO_OP):
             after_cart = client.read_cart()
             new_count = sum(l.quantity for l in after_cart.lines)
+            item_label = variant.variant_title if variant else f"item {action.line_key or action.variant_id}"
             if q_op == QuantityOperation.REMOVE:
-                spoken = f"Removed {variant.variant_title} from your cart. You now have {new_count} items in your cart."
+                spoken = f"Removed {item_label} from your cart. You now have {new_count} items in your cart."
             else:
-                spoken = f"Added {variant.variant_title} to your cart. You now have {new_count} items in your cart."
+                spoken = f"Added {item_label} to your cart. You now have {new_count} items in your cart."
 
             return ControllerTurnResult(
                 session_id=session_id,
