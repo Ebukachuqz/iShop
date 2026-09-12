@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 
+from evals.cli.validate import validate_manifest
 from evals.runner.manifest import load_manifest
 from evals.runner.runner import EvaluationRunner
 from ishop.commerce.catalog import EvidenceSnapshot, ProductEvidence, VariantEvidence
@@ -52,7 +53,14 @@ def create_mock_evidence() -> EvidenceSnapshot:
 
 
 def run_evaluation(manifest_path: str, output_path: str | None = None) -> int:
-    print(f"Loading manifest: {manifest_path}...")
+    print(f"Validating manifest: {manifest_path}...")
+    is_valid, errors = validate_manifest(manifest_path)
+    if not is_valid:
+        print(f"FAIL: Manifest validation failed with {len(errors)} error(s):")
+        for err in errors:
+            print(f"  - {err}")
+        return 1
+
     manifest = load_manifest(manifest_path)
     evidence = create_mock_evidence()
 

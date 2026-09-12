@@ -94,6 +94,24 @@ class ResolutionResult:
     stock_known: bool = True
 
 
+def _normalize_opt_val(key: str, val: str | None) -> set[str]:
+    if not val:
+        return set()
+    k = key.lower().strip()
+    v = str(val).lower().strip()
+    syns = {v}
+    if k == "size":
+        if v in ("s", "small"):
+            syns.update({"s", "small"})
+        elif v in ("m", "medium", "med"):
+            syns.update({"m", "medium", "med"})
+        elif v in ("l", "large"):
+            syns.update({"l", "large"})
+        elif v in ("xl", "extra large"):
+            syns.update({"xl", "extra large"})
+    return syns
+
+
 class CatalogResolver:
     """Deterministic catalog resolver without model shortcuts."""
 
@@ -152,7 +170,6 @@ class CatalogResolver:
                 status=ResolutionStatus.REJECT,
                 reason="Target specification must supply product_id or title_query",
             )
-
         # 3. Option matching and variant selection (T-03, S-04)
         target_opts = target.selected_options
         matching_variants: list[VariantEvidence] = []
@@ -164,7 +181,13 @@ class CatalogResolver:
                 for v in product.variants
                 if opt_key in v.selected_options
             }
-            if valid_vals_for_opt and opt_val not in valid_vals_for_opt:
+            req_syns = _normalize_opt_val(opt_key, opt_val)
+            matched_valid = any(
+                bool(req_syns & _normalize_opt_val(opt_key, valid_val))
+                for valid_val in valid_vals_for_opt
+                if valid_val
+            )
+            if valid_vals_for_opt and not matched_valid:
                 # Explicit requested option does not exist on product.
                 # S-04: Never silently substitute!
                 return ResolutionResult(
@@ -177,14 +200,24 @@ class CatalogResolver:
         for variant in product.variants:
             matches_all = True
             for opt_key, opt_val in target_opts.items():
-                if variant.selected_options.get(opt_key) != opt_val:
+                var_val = variant.selected_options.get(opt_key)
+                if not var_val:
+                    matches_all = False
+                    break
+                req_syns = _normalize_opt_val(opt_key, opt_val)
+                var_syns = _normalize_opt_val(opt_key, var_val)
+                if not (req_syns & var_syns):
                     matches_all = False
                     break
             if matches_all and target.excluded_options:
                 for ex_key, ex_val in target.excluded_options.items():
-                    if variant.selected_options.get(ex_key) == ex_val:
-                        matches_all = False
-                        break
+                    var_val = variant.selected_options.get(ex_key)
+                    if var_val:
+                        ex_syns = _normalize_opt_val(ex_key, ex_val)
+                        var_syns = _normalize_opt_val(ex_key, var_val)
+                        if ex_syns & var_syns:
+                            matches_all = False
+                            break
             if matches_all:
                 matching_variants.append(variant)
 

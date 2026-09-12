@@ -186,7 +186,7 @@ class FakeLlmProvider(LlmProvider):
             # "add two", "add 3 more", "buy two" -> increment
             inc_match = re.search(r"(?:add|give me|buy|want)\s+(\d+|one|two|three|four|five)", lower)
 
-            num_words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+            num_words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "kan": 1, "meji": 2}
 
             if set_match:
                 val_raw = set_match.group(1)
@@ -198,13 +198,18 @@ class FakeLlmProvider(LlmProvider):
                 val = int(val_raw) if val_raw.isdigit() else num_words.get(val_raw, 1)
                 quantity_change = QuantityChange(mode="increment", value=val)
                 operation = IntentOperation.ADD_TO_CART
-            elif any(w in lower for w in ("add", "buy", "put", "want")):
-                quantity_change = QuantityChange(mode="increment", value=1)
+            elif any(re.search(rf"\b{w}\b", lower) for w in ("add", "buy", "put", "want", "abeg", "ra")):
+                val = 1
+                if re.search(r"\bkan\b", lower):
+                    val = 1
+                elif re.search(r"\bmeji\b", lower):
+                    val = 2
+                quantity_change = QuantityChange(mode="increment", value=val)
                 operation = IntentOperation.ADD_TO_CART
             elif "update" in lower:
                 quantity_change = QuantityChange(mode="set", value=1)
                 operation = IntentOperation.UPDATE_QUANTITY
-            elif any(w in lower for w in ("find", "search", "show me", "looking for")):
+            elif any(phrase in lower for phrase in ("find", "search", "show me", "looking for")):
                 operation = IntentOperation.SEARCH
             else:
                 operation = IntentOperation.BROWSE
@@ -217,8 +222,8 @@ class FakeLlmProvider(LlmProvider):
             budget = BudgetConstraint(max_amount=amount, currency=request.budget_currency)
 
         # 7. Attributes extraction, self-correction, and negation (T-06)
-        # Colors: red, blue, green, black, white, yellow
-        # Sizes: small, medium, large, xl, xxl
+        # Colors: red, blue, green, black, white, yellow, pupa (red in Yoruba)
+        # Sizes: small, medium, large, xl, xxl, kekere/kékeré (small in Yoruba)
         selected_attrs: dict[str, str] = {}
 
         # Handle self-correction for size/color:
@@ -235,26 +240,28 @@ class FakeLlmProvider(LlmProvider):
         for nm in neg_matches:
             negated_colors.add(nm.lower())
 
-        colors = ["red", "blue", "green", "black", "white", "yellow"]
-        sizes = ["small", "medium", "large", "xl", "xxl"]
+        colors = ["red", "blue", "green", "black", "white", "yellow", "pupa"]
+        sizes = ["small", "medium", "large", "xl", "xxl", "kekere", "kékeré"]
 
         for color in colors:
             if re.search(rf"\b{color}\b", lower):
-                if color in negated_colors:
-                    selected_attrs["color"] = f"!{color}"
+                canon_color = "red" if color == "pupa" else color
+                if color in negated_colors or canon_color in negated_colors:
+                    selected_attrs["color"] = f"!{canon_color}"
                     continue
                 if corrected_word and color != corrected_word and corrected_word in colors:
                     continue
-                selected_attrs["color"] = color
+                selected_attrs["color"] = canon_color
 
         for size in sizes:
             if re.search(rf"\b{size}\b", lower):
-                if size in negated_colors:
-                    selected_attrs["size"] = f"!{size}"
+                canon_size = "small" if size in ("kekere", "kékeré") else size
+                if size in negated_colors or canon_size in negated_colors:
+                    selected_attrs["size"] = f"!{canon_size}"
                     continue
                 if corrected_word and size != corrected_word and corrected_word in sizes:
                     continue
-                selected_attrs["size"] = size
+                selected_attrs["size"] = canon_size
 
         # 8. Product query / reference extraction
         products_vocab = [

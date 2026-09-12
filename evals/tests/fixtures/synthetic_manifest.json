@@ -4,7 +4,7 @@
   "created_at_utc": "2026-09-12T00:00:00Z",
   "mode": "human_transcript",
   "normalization_version": "ishop-unicode-v1",
-  "manifest_hash": "synth_hash_1234567890abcdef",
+  "manifest_hash": "944f882720343c19968cce4242cb70363384e9b7c3a8ca8ba3b3ba67a82436a6",
   "episodes": [
     {
       "episode_id": "ep_01_valid_pcm",

@@ -1,9 +1,9 @@
 {
   "run_id": "run_synthetic_pilot_001",
-  "manifest_hash": "synth_hash_1234567890abcdef",
+  "manifest_hash": "944f882720343c19968cce4242cb70363384e9b7c3a8ca8ba3b3ba67a82436a6",
   "mode": "human_transcript",
   "normalization_version": "ishop-unicode-v1",
-  "completed_at_utc": "2026-09-12T07:55:30.699547+00:00",
+  "completed_at_utc": "2026-09-12T08:56:41.482527+00:00",
   "total_episodes": 6,
   "episodes": [
     {

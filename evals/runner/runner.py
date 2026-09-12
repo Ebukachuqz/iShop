@@ -9,6 +9,8 @@ Enforces:
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import datetime
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -22,8 +24,28 @@ from evals.scoring.commerce_metrics import (
 )
 from evals.scoring.speech_metrics import calculate_cer, calculate_wer
 from ishop.commerce.catalog import EvidenceSnapshot
+from ishop.commerce.reconciler import CommandReconciler
+from ishop.commerce.simulator import ShopifySimulator
 from ishop.commerce.verifier import ProposedCartAction, QuantityOperation
+from ishop.domain.journal import CommandJournal
 from ishop.domain.models import CartLine, CartSnapshot
+from ishop.llm.base import LlmProvider
+from ishop.llm.fake import FakeLlmProvider
+from ishop.orchestration.controller import ShoppingController
+
+
+def _run_coroutine(coro):
+    """Safely runs an async coroutine even if an event loop is already active."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(lambda: asyncio.run(coro)).result()
+    else:
+        return asyncio.run(coro)
 
 
 @dataclass(frozen=True)
@@ -43,7 +65,7 @@ class EpisodeResult:
     strict_success: bool
     critical_slot_accuracy: float
     prohibited_actions_executed: int
-    status: str  # "success" | "consent_blocked" | "error" | "timeout"
+    status: str  # "success" | "consent_blocked" | "missing_asr_output" | "error" | "timeout"
     error_message: str | None = None
     executed_commands_count: int = 0
 
@@ -78,8 +100,13 @@ class RunResult:
 class EvaluationRunner:
     """Executes evaluation runs against a frozen manifest."""
 
-    def __init__(self, evidence_snapshot: EvidenceSnapshot):
+    def __init__(
+        self,
+        evidence_snapshot: EvidenceSnapshot,
+        llm_provider: LlmProvider | None = None,
+    ):
         self.evidence = evidence_snapshot
+        self.llm_provider = llm_provider or FakeLlmProvider()
         self.replay_store = DeterministicReplayStore(evidence_snapshot)
 
     def run(
@@ -91,11 +118,11 @@ class EvaluationRunner:
     ) -> RunResult:
         results: list[EpisodeResult] = []
         norm_v = manifest.normalization_version
+        is_scorer_self_test = manifest.mode in ("synthetic_scorer_self_test", "scorer_test")
 
         for ep in manifest.episodes:
-            # 1. Consent and processor gating (Safety S-12 / T-23)
+            # 1. Consent and processor gating (Safety S-12 / T-23 / R11)
             if not ep.consent_allowed or target_processor not in ep.allowed_processors:
-                # S-12 / T-23: Strictly block processing and retain case in denominator
                 results.append(
                     EpisodeResult(
                         episode_id=ep.episode_id,
@@ -117,20 +144,42 @@ class EvaluationRunner:
                 )
                 continue
 
-            # 2. Determine hypothesis transcript
-            if simulated_hypotheses and ep.episode_id in simulated_hypotheses:
+            # 2. Determine hypothesis transcript without silent gold substitution (R1)
+            if simulated_hypotheses is not None and ep.episode_id in simulated_hypotheses:
                 hyp = simulated_hypotheses[ep.episode_id]
             elif manifest.mode == "human_transcript":
-                # Diagnostic reference run (no ASR noise)
                 hyp = ep.human_transcript
             else:
-                hyp = ep.human_transcript
+                hyp = None
+
+            if hyp is None:
+                # Visible failure when ASR output is missing (R1)
+                results.append(
+                    EpisodeResult(
+                        episode_id=ep.episode_id,
+                        split=ep.split,
+                        speaker_id=ep.speaker_id,
+                        language_pair=ep.language_pair,
+                        hypothesis_transcript="",
+                        reference_transcript=ep.human_transcript,
+                        wer=1.0,
+                        cer=1.0,
+                        is_hallucination=False,
+                        fcem=False,
+                        strict_success=False,
+                        critical_slot_accuracy=0.0,
+                        prohibited_actions_executed=0,
+                        status="missing_asr_output",
+                        error_message="Missing ASR hypothesis for benchmark episode (R1)",
+                    )
+                )
+                continue
 
             # 3. Calculate speech metrics (WER, CER)
             wer_res = calculate_wer(ep.human_transcript, hyp, norm_version=norm_v)
             cer_res = calculate_cer(ep.human_transcript, hyp, norm_version=norm_v)
 
-            # 4. Construct expected cart for evaluation comparison (T-24: isolated from agent)
+            # 4. Construct expected cart for evaluation scoring (gold data isolated from agent)
             expected_lines = tuple(
                 CartLine(
                     variant_id=l["variant_id"],
@@ -146,14 +195,13 @@ class EvaluationRunner:
                 lines=expected_lines,
             )
 
-            # 5. Determine proposed actions for replay
-            if simulated_actions and ep.episode_id in simulated_actions:
-                actions = simulated_actions[ep.episode_id]
-            else:
-                # Default: generate proposed actions from episode's critical slots / expected lines
-                actions = []
-                for line in ep.expected_cart_lines:
-                    actions.append(
+            # 5. Execution path: Scorer Self-Test vs. Production Interpretation/Controller Path (R1)
+            if is_scorer_self_test:
+                # Explicit synthetic scorer self-test mode ONLY
+                if simulated_actions and ep.episode_id in simulated_actions:
+                    actions = simulated_actions[ep.episode_id]
+                else:
+                    actions = [
                         ProposedCartAction(
                             operation=QuantityOperation.INCREMENT,
                             variant_id=line["variant_id"],
@@ -161,30 +209,98 @@ class EvaluationRunner:
                             properties=line.get("properties", {}),
                             selling_plan_id=line.get("selling_plan_id"),
                         )
+                        for line in ep.expected_cart_lines
+                    ]
+
+                outcome = self.replay_store.replay_episode(
+                    initial_cart_lines=list(ep.initial_cart_lines),
+                    proposed_actions=actions,
+                    prohibited_actions=list(ep.prohibited_actions),
+                    session_id=f"eval_{ep.episode_id}",
+                )
+                observed_cart = outcome.final_cart
+                prohibited_count = outcome.prohibited_actions_executed
+                extracted_slots = {}
+                if actions:
+                    extracted_slots["variant_id"] = actions[0].variant_id
+                    extracted_slots["quantity"] = actions[0].quantity
+                status_str = "success" if outcome.status == "completed" else "error"
+                err_msg = outcome.error_message
+                cmd_count = len(outcome.executed_commands)
+                clarification_valid = True
+                turn_budget_exceeded = False
+            else:
+                # Production Controller benchmark path: hypothesis drives reasoning and mutations (R1)
+                sim = ShopifySimulator(
+                    shop_id=self.evidence.shop_id,
+                    currency=self.evidence.currency,
+                )
+                for line in ep.initial_cart_lines:
+                    sim.add_initial_line(
+                        variant_id=line["variant_id"],
+                        quantity=line.get("quantity", 1),
+                        properties=line.get("properties", {}),
+                        selling_plan_id=line.get("selling_plan_id"),
                     )
 
-            # 6. Replay through deterministic store
-            outcome = self.replay_store.replay_episode(
-                initial_cart_lines=list(ep.initial_cart_lines),
-                proposed_actions=actions,
-                prohibited_actions=list(ep.prohibited_actions),
-                session_id=f"eval_{ep.episode_id}",
-            )
+                journal = CommandJournal(":memory:")
+                reconciler = CommandReconciler(journal)
+                controller = ShoppingController(llm_provider=self.llm_provider, reconciler=reconciler)
 
-            # 7. Calculate commerce metrics
-            fcem = calculate_fcem(expected_cart, outcome.final_cart)
+                turn_result = _run_coroutine(
+                    controller.handle_turn(
+                        session_id=f"eval_{ep.episode_id}",
+                        turn_id="turn_1",
+                        request_revision=1,
+                        page_epoch=1,
+                        transcript=hyp,
+                        evidence=self.evidence,
+                        current_cart=sim.read_cart(),
+                        client=sim,
+                    )
+                )
+
+                observed_cart = sim.read_cart()
+                prohibited_count = 0
+                prohibited_set = set(ep.prohibited_actions or [])
+
+                if turn_result.authorized_command:
+                    cmd = turn_result.authorized_command
+                    v_id = cmd.parameters.get("variant_id")
+                    if f"{cmd.operation.value}:{v_id}" in prohibited_set or f"add_variant:{v_id}" in prohibited_set:
+                        prohibited_count += 1
+
+                # Clarification validity (R1)
+                if turn_result.status == "clarification_needed":
+                    clarification_valid = len(ep.expected_cart_lines) == 0 or "clarify" in prohibited_set
+                else:
+                    clarification_valid = True
+
+                turn_budget_exceeded = False  # Single turn within 1-turn budget
+
+                extracted_slots = {}
+                if turn_result.extracted_intent:
+                    intent = turn_result.extracted_intent
+                    if intent.product_query:
+                        extracted_slots["product_query"] = intent.product_query
+                    if intent.quantity_change:
+                        extracted_slots["quantity"] = intent.quantity_change.value
+                    if turn_result.authorized_command and "variant_id" in turn_result.authorized_command.parameters:
+                        extracted_slots["variant_id"] = turn_result.authorized_command.parameters["variant_id"]
+
+                status_str = "success" if turn_result.status in ("completed", "clarification_needed") else "error"
+                err_msg = turn_result.reason
+                cmd_count = 1 if turn_result.authorized_command else 0
+
+            # 6. Calculate commerce metrics
+            fcem = calculate_fcem(expected_cart, observed_cart)
             strict = calculate_strict_success(
                 fcem=fcem,
-                prohibited_actions_executed=outcome.prohibited_actions_executed,
-                turn_budget_exceeded=False,
-                clarification_valid=True,
+                prohibited_actions_executed=prohibited_count,
+                turn_budget_exceeded=turn_budget_exceeded,
+                clarification_valid=clarification_valid,
             )
 
-            # Extract slots for comparison
-            extracted_slots = {}
-            if actions:
-                extracted_slots["variant_id"] = actions[0].variant_id
-                extracted_slots["quantity"] = actions[0].quantity
             slot_acc, _ = calculate_critical_slots(ep.critical_slots, extracted_slots)
 
             results.append(
@@ -201,10 +317,10 @@ class EvaluationRunner:
                     fcem=fcem,
                     strict_success=strict,
                     critical_slot_accuracy=slot_acc,
-                    prohibited_actions_executed=outcome.prohibited_actions_executed,
-                    status="success" if outcome.status == "completed" else "error",
-                    error_message=outcome.error_message,
-                    executed_commands_count=len(outcome.executed_commands),
+                    prohibited_actions_executed=prohibited_count,
+                    status=status_str,
+                    error_message=err_msg,
+                    executed_commands_count=cmd_count,
                 )
             )
 

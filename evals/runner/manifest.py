@@ -15,6 +15,31 @@ from pathlib import Path
 from typing import Any
 
 
+ALLOWED_MODES = {
+    "human_transcript",
+    "controlled_asr",
+    "benchmark",
+    "simulator",
+    "synthetic_scorer_self_test",
+}
+ALLOWED_NORMALIZATIONS = {"ishop-unicode-v1"}
+
+
+def compute_manifest_hash(
+    run_id: str,
+    mode: str,
+    normalization_version: str,
+    episodes: list[dict[str, Any]] | tuple[Episode, ...] | list[Episode],
+) -> str:
+    """Computes deterministic SHA-256 over run metadata and serialized episodes."""
+    serialized_episodes = json.dumps(
+        [e.to_dict() if hasattr(e, "to_dict") else e for e in episodes],
+        sort_keys=True,
+    )
+    content = f"{run_id}|{mode}|{normalization_version}|{serialized_episodes}"
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class Episode:
     """A single evaluation episode."""
@@ -29,7 +54,7 @@ class Episode:
     expected_cart_lines: tuple[dict[str, Any], ...] = ()
     critical_slots: dict[str, Any] = field(default_factory=dict)
     prohibited_actions: tuple[str, ...] = ()
-    consent_allowed: bool = True  # Safety S-12 / T-23
+    consent_allowed: bool = False  # Safety S-12 / T-23 / R11: default denied
     allowed_processors: tuple[str, ...] = ("local", "simulator")
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +78,16 @@ class RunManifest:
     manifest_version: str = "1.0.0"
     manifest_hash: str = ""
 
+    def verify_hash(self) -> bool:
+        """Verifies that manifest_hash matches recomputed SHA-256 over content."""
+        expected = compute_manifest_hash(
+            run_id=self.run_id,
+            mode=self.mode,
+            normalization_version=self.normalization_version,
+            episodes=self.episodes,
+        )
+        return self.manifest_hash == expected
+
     @classmethod
     def create(
         cls,
@@ -62,13 +97,12 @@ class RunManifest:
         normalization_version: str,
         episodes: list[Episode],
     ) -> RunManifest:
-        # Calculate deterministic SHA-256 over sorted episodes
-        serialized_episodes = json.dumps(
-            [e.to_dict() for e in episodes],
-            sort_keys=True,
+        manifest_hash = compute_manifest_hash(
+            run_id=run_id,
+            mode=mode,
+            normalization_version=normalization_version,
+            episodes=episodes,
         )
-        content = f"{run_id}|{mode}|{normalization_version}|{serialized_episodes}"
-        manifest_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
         return cls(
             run_id=run_id,
@@ -105,7 +139,7 @@ class RunManifest:
                 expected_cart_lines=tuple(e.get("expected_cart_lines", [])),
                 critical_slots=e.get("critical_slots", {}),
                 prohibited_actions=tuple(e.get("prohibited_actions", [])),
-                consent_allowed=e.get("consent_allowed", True),
+                consent_allowed=e.get("consent_allowed", False),
                 allowed_processors=tuple(e.get("allowed_processors", ["local", "simulator"])),
             )
             for e in raw_episodes
