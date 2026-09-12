@@ -136,6 +136,28 @@ def test_t25_catalog_compatibility_validation():
     assert "var_nonexistent_999" in errors[0]
 
 
+def test_t23_duplicate_audio_content_fails_validation():
+    digest = "c" * 64
+    episodes = [
+        create_valid_episode("ep_001", "dev", "spk_01", audio_sha256=digest),
+        create_valid_episode("ep_002", "test", "spk_02", audio_sha256=digest),
+    ]
+    errors = validate_run(create_valid_manifest(episodes=episodes))
+    assert any("Duplicate audio content" in error for error in errors)
+
+
+def test_t23_disallowed_cloud_processor_fails_validation():
+    episode = create_valid_episode("ep_001", allowed_processors=("sahara",))
+    manifest = create_valid_manifest(episodes=[episode], configuration={
+        "asr": {"provider": "groq", "model": "whisper-large-v3", "route": "batch", "settings": {}}
+    })
+    manifest = RunManifest.create(manifest.run_id, manifest.created_at_utc, "benchmark",
+                                  manifest.normalization_version, list(manifest.episodes),
+                                  manifest.configuration, "research")
+    errors = validate_run(manifest)
+    assert any("not allowed" in error for error in errors)
+
+
 def test_t25_unicode_normalization_preserves_yoruba_subdots_and_diacritics():
     """T-25: represents ishop-unicode-v1 NFC normalization preserving Yoruba diacritics and Pidgin spelling."""
     raw_yoruba = "Èmi fẹ́ rà bọ̀tini pụpa ńlá"
@@ -147,5 +169,4 @@ def test_t25_unicode_normalization_preserves_yoruba_subdots_and_diacritics():
     pidgin_text = "Abeg   give me 2   embroidered caps   dem!"
     norm_pidgin = normalize_text(pidgin_text, version="ishop-unicode-v1")
     assert norm_pidgin == "abeg give me 2 embroidered caps dem"
-
 

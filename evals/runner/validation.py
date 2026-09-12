@@ -42,6 +42,7 @@ def validate_run(manifest, base_dir=None):
         if not all(asr.get(k) for k in ("provider", "model", "route")) or "settings" not in asr:
             errors.append("Recorded ASR outputs require frozen provider/model/route/settings")
     seen = set()
+    seen_audio_hashes = set()
     dev_speakers = set()
     test_speakers = set()
     if not manifest.episodes:
@@ -67,6 +68,16 @@ def validate_run(manifest, base_dir=None):
             errors.append("Clarification goal requires expected fields")
         if manifest.data_kind == "research" and manifest.mode in ("controlled_asr", "benchmark") and not ep.audio_ref:
             errors.append("Research ASR episode requires audio_ref and audio_sha256")
+        if manifest.data_kind == "research" and manifest.mode in ("controlled_asr", "benchmark"):
+            provider = config.get("asr", {}).get("provider")
+            if not ep.consent_allowed:
+                errors.append(f"Research episode {ep.episode_id} lacks cloud-processing consent")
+            if provider and provider not in ep.allowed_processors:
+                errors.append(f"Processor '{provider}' is not allowed for episode {ep.episode_id}")
+        if ep.audio_sha256:
+            if ep.audio_sha256 in seen_audio_hashes:
+                errors.append(f"Duplicate audio content detected: {ep.episode_id}")
+            seen_audio_hashes.add(ep.audio_sha256)
         if ep.audio_ref:
             path = Path(ep.audio_ref)
             if not path.is_absolute():
@@ -101,6 +112,10 @@ def validate_catalog_compatibility(manifest, catalog_evidence):
             vid = line.get("variant_id")
             if vid and vid not in known_variants:
                 errors.append(f"Episode {ep.episode_id}: expected cart variant '{vid}' not in catalog")
+        for slot_name in ("product_id", "variant_id"):
+            value = ep.critical_slots.get(slot_name)
+            known = known_products if slot_name == "product_id" else known_variants
+            if value and value not in known:
+                errors.append(f"Episode {ep.episode_id}: critical {slot_name} '{value}' not in catalog")
     return errors
-
 

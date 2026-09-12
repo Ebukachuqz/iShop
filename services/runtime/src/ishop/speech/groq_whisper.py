@@ -63,8 +63,8 @@ class GroqWhisperSpeechProvider(SpeechProvider):
 
         headers = {"Authorization": f"Bearer {self._api_key}"}
         fields = {"model": self._model_name, "response_format": "json"}
-        if language_hint:
-            fields["language"] = language_hint.split("-")[0]  # e.g., 'yo' or 'en'
+        # Do not force one language for code-switched benchmark audio. A separate
+        # monolingual profile may opt into a language hint later.
 
         start_time = time.monotonic()
         payload = await asyncio.to_thread(
@@ -74,6 +74,7 @@ class GroqWhisperSpeechProvider(SpeechProvider):
             audio_data,
             fields,
             self._timeout_seconds,
+            "groq",
         )
         elapsed = (time.monotonic() - start_time) * 1000.0
 
@@ -87,5 +88,5 @@ class GroqWhisperSpeechProvider(SpeechProvider):
             latency_ms=elapsed,
             provider_name="groq",
             model_name=self._model_name,
-            raw_metadata=payload,
+            raw_metadata={"request_id": payload.get("x_groq", {}).get("id")},
         )

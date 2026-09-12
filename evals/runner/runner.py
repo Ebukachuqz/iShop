@@ -151,7 +151,9 @@ class EvaluationRunner:
             simulated_actions=None, base_dir=None):
         # Snapshot nested mutable data, then validate at the actual execution boundary.
         manifest = RunManifest.from_dict(copy.deepcopy(manifest.to_dict()))
+        from evals.runner.validation import validate_catalog_compatibility
         errors = validate_run(manifest, base_dir)
+        errors.extend(validate_catalog_compatibility(manifest, self.evidence))
         actual = self.configuration
         if any(manifest.configuration.get(k) != v for k, v in actual.items()):
             errors.append("Frozen configuration does not match code, evidence or provider")

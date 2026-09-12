@@ -24,9 +24,12 @@ def _http_post_multipart(
     audio_data: bytes,
     fields: dict[str, str],
     timeout_seconds: float = 15.0,
+    provider_name: str = "sahara",
+    filename: str = "audio.wav",
+    mime_type: str = "audio/wav",
 ) -> dict[str, Any]:
     """Helper executing HTTP POST with multipart/form-data payload in worker thread."""
-    boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+    boundary = f"ishop-{time.monotonic_ns()}"
     body = bytearray()
 
     for key, val in fields.items():
@@ -36,9 +39,9 @@ def _http_post_multipart(
 
     body.extend(f"--{boundary}\r\n".encode("utf-8"))
     body.extend(
-        f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'.encode("utf-8")
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode("utf-8")
     )
-    body.extend(b"Content-Type: audio/wav\r\n\r\n")
+    body.extend(f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"))
     body.extend(audio_data)
     body.extend(b"\r\n")
     body.extend(f"--{boundary}--\r\n".encode("utf-8"))
@@ -54,14 +57,14 @@ def _http_post_multipart(
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")
         raise SpeechProviderError(
-            f"Sahara API HTTP {exc.code}: {err_body}",
-            provider_name="sahara",
+            f"{provider_name} API HTTP {exc.code}: {err_body}",
+            provider_name=provider_name,
             retryable=exc.code in (429, 500, 502, 503, 504),
         ) from exc
     except Exception as exc:
         raise SpeechProviderError(
-            f"Sahara network failure: {str(exc)}",
-            provider_name="sahara",
+            f"{provider_name} network failure: {str(exc)}",
+            provider_name=provider_name,
             retryable=True,
         ) from exc
 
@@ -72,23 +75,23 @@ class SaharaSpeechProvider(SpeechProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        endpoint_url: str = "https://api.intronhealth.com/v1/speech/transcribe",
+        endpoint_url: str | None = None,
         timeout_seconds: float = 15.0,
     ):
         self._api_key = api_key or os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY")
-        self._endpoint_url = endpoint_url
+        self._endpoint_url = endpoint_url or os.getenv("SAHARA_TRANSCRIBE_URL", "")
         self._timeout_seconds = timeout_seconds
 
     @property
     def profile(self) -> SpeechProfile:
-        has_key = bool(self._api_key)
+        has_key = bool(self._api_key and self._endpoint_url)
         return SpeechProfile(
             profile_id="sahara-intron-asr",
             provider_name="sahara",
-            model_name="sahara-multilingual-v1",
+            model_name="competition-route-unverified",
             enabled=has_key,
-            disabled_reason=None if has_key else "SAHARA_API_KEY environment variable not set",
-            supports_streaming=True,
+            disabled_reason=None if has_key else "SAHARA_API_KEY and verified SAHARA_TRANSCRIBE_URL are required",
+            supports_streaming=False,
             supports_code_switching=True,
             requires_api_key=True,
         )
@@ -99,17 +102,21 @@ class SaharaSpeechProvider(SpeechProvider):
         sample_rate: int = 16000,
         language_hint: str | None = None,
     ) -> SpeechTranscriptionResult:
-        if not self._api_key:
+        if not self._api_key or not self._endpoint_url:
             raise SpeechProviderError(
-                "SAHARA_API_KEY not configured",
+                "SAHARA_API_KEY or verified SAHARA_TRANSCRIBE_URL not configured",
                 provider_name="sahara",
                 retryable=False,
             )
 
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        fields = {"sample_rate": str(sample_rate)}
+        fields = {
+            "sample_rate": str(sample_rate),
+            "use_disable_llm_corrections": "true",
+            "category": "general",
+        }
         if language_hint:
-            fields["language"] = language_hint
+            fields["language_code"] = language_hint
 
         start_time = time.monotonic()
         payload = await asyncio.to_thread(
@@ -119,6 +126,7 @@ class SaharaSpeechProvider(SpeechProvider):
             audio_data,
             fields,
             self._timeout_seconds,
+            "sahara",
         )
         elapsed = (time.monotonic() - start_time) * 1000.0
 
@@ -132,6 +140,6 @@ class SaharaSpeechProvider(SpeechProvider):
             confidence=float(conf) if conf is not None else None,
             latency_ms=elapsed,
             provider_name="sahara",
-            model_name="sahara-multilingual-v1",
-            raw_metadata=payload,
+            model_name="competition-route-unverified",
+            raw_metadata={"request_id": payload.get("request_id")},
         )

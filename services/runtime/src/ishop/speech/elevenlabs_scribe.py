@@ -25,7 +25,7 @@ class ElevenLabsScribeSpeechProvider(SpeechProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model_name: str = "scribe_v2_realtime",
+        model_name: str = "scribe_v2",
         endpoint_url: str = "https://api.elevenlabs.io/v1/speech-to-text",
         timeout_seconds: float = 15.0,
     ):
@@ -43,7 +43,7 @@ class ElevenLabsScribeSpeechProvider(SpeechProvider):
             model_name=self._model_name,
             enabled=has_key,
             disabled_reason=None if has_key else "ELEVENLABS_API_KEY environment variable not set",
-            supports_streaming=True,
+            supports_streaming=False,
             supports_code_switching=True,
             requires_api_key=True,
         )
@@ -74,6 +74,7 @@ class ElevenLabsScribeSpeechProvider(SpeechProvider):
             audio_data,
             fields,
             self._timeout_seconds,
+            "elevenlabs",
         )
         elapsed = (time.monotonic() - start_time) * 1000.0
 
@@ -87,5 +88,5 @@ class ElevenLabsScribeSpeechProvider(SpeechProvider):
             latency_ms=elapsed,
             provider_name="elevenlabs",
             model_name=self._model_name,
-            raw_metadata=payload,
+            raw_metadata={"request_id": payload.get("request_id")},
         )

@@ -51,9 +51,8 @@ def _assemblyai_transcribe_worker(
         raise SpeechProviderError("AssemblyAI upload failed to return upload_url", provider_name="assemblyai", retryable=False)
 
     tx_url = "https://api.assemblyai.com/v2/transcript"
-    tx_body = {"audio_url": audio_url}
-    if language_hint:
-        tx_body["language_code"] = language_hint.split("-")[0]
+    tx_body = {"audio_url": audio_url, "speech_models": ["universal-2"]}
+    # Automatic detection is kept enabled for code-switched evaluation.
 
     json_data = json.dumps(tx_body).encode("utf-8")
     tx_headers = {"authorization": api_key, "content-type": "application/json"}
@@ -99,10 +98,10 @@ class AssemblyAiSpeechProvider(SpeechProvider):
         return SpeechProfile(
             profile_id="assemblyai-stt",
             provider_name="assemblyai",
-            model_name="assemblyai-best",
+            model_name="universal-2",
             enabled=has_key,
             disabled_reason=None if has_key else "ASSEMBLYAI_API_KEY environment variable not set",
-            supports_streaming=True,
+            supports_streaming=False,
             supports_code_switching=True,
             requires_api_key=True,
         )
@@ -139,6 +138,6 @@ class AssemblyAiSpeechProvider(SpeechProvider):
             confidence=float(confidence) if confidence is not None else None,
             latency_ms=elapsed,
             provider_name="assemblyai",
-            model_name="assemblyai-best",
-            raw_metadata=payload,
+            model_name=str(payload.get("speech_model_used") or "universal-2"),
+            raw_metadata={"id": payload.get("id"), "status": payload.get("status")},
         )

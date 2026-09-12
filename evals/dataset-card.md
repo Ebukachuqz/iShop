@@ -36,7 +36,7 @@ The iShop evaluation benchmark evaluates voice shopping assistants on code-switc
 
 - **Consent Separation (Safety S-12 / T-23):**
   - Permission A: Local research and offline evaluation (max 30 days retention).
-  - Permission B: Processing by external cloud providers (Sahara, Mansa, OpenAI, ElevenLabs, Google, Groq).
+  - Permission B: Processing by the selected external cloud providers (Sahara, Groq, AssemblyAI, ElevenLabs and Google Gemini).
   - Permission C: Public dataset release under open-access research license.
 - **Data Exclusion:**
   - Raw audio recordings, identity registers, and personal phone/email information are strictly excluded from Git tracking via `.gitignore` and audited by `scripts/check-secrets.py`.

@@ -64,6 +64,14 @@ def run_evaluation(manifest_path: str, output_path: str | None = None) -> int:
     manifest = load_manifest(manifest_path)
     evidence = create_mock_evidence()
 
+    from evals.runner.validation import validate_catalog_compatibility
+    catalog_errors = validate_catalog_compatibility(manifest, evidence)
+    if catalog_errors:
+        print(f"FAIL: Catalog compatibility failed with {len(catalog_errors)} error(s):")
+        for error in catalog_errors:
+            print(f"  - {error}")
+        return 1
+
     print(f"Running evaluation: {manifest.run_id} ({len(manifest.episodes)} episodes)...")
     runner = EvaluationRunner(evidence)
     result = runner.run(manifest, base_dir=Path(manifest_path).resolve().parent)

@@ -18,11 +18,10 @@ Participant consent must strictly decouple three distinct permissions. Granting 
 2. **Permission B: Third-Party Provider Processing (ASR & LLM)**
    - Transmission of anonymized/pseudonymous audio or transcript text to evaluated external cloud providers:
      - Sahara (Intron Health)
-     - Mansa (African Languages Lab)
-     - OpenAI (gpt-live-transcribe)
-     - ElevenLabs (scribe_v2_realtime)
-     - Google Cloud (Speech-to-Text V2 / Chirp 3)
-     - Google Gemini / Groq (transcript intent interpretation)
+     - Groq (Whisper Large v3 transcription and optional transcript interpretation)
+     - AssemblyAI (Universal-2 transcription)
+     - ElevenLabs (Scribe v2 transcription)
+     - Google Gemini (Gemini 3.5 Transcribe and optional transcript interpretation)
    - Subject to vendor retention and training terms (Q-06). Unpaid developer tiers that permit human review or model training are excluded from receiving unconsented audio.
 
 3. **Permission C: Public Open Research Dataset Release**

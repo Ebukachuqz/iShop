@@ -64,7 +64,7 @@ def test_fake_speech_provider_transcription():
 def test_provider_transcribe_missing_key_raises_speech_provider_error():
     """T-14: Calling transcribe on an unconfigured provider raises SpeechProviderError."""
     sahara = SaharaSpeechProvider(api_key=None)
-    with pytest.raises(SpeechProviderError, match="SAHARA_API_KEY not configured"):
+    with pytest.raises(SpeechProviderError, match="SAHARA_API_KEY.*SAHARA_TRANSCRIBE_URL"):
         asyncio.run(sahara.transcribe(b"AUDIO_BYTES"))
 
     groq = GroqWhisperSpeechProvider(api_key=None)
@@ -81,7 +81,26 @@ def test_active_speech_provider_selection():
     assert registry.active_provider.profile.profile_id == "fake-speech-offline"
 
     # Enabled explicitly configured provider can be set active
-    custom_sahara = SaharaSpeechProvider(api_key="test_sahara_key")
+    custom_sahara = SaharaSpeechProvider(api_key="test_sahara_key", endpoint_url="https://example.invalid/transcribe")
     registry.register(custom_sahara)
     assert registry.set_active("sahara-intron-asr") is True
     assert registry.active_provider.profile.profile_id == "sahara-intron-asr"
+
+
+def test_batch_profiles_name_exact_models_and_do_not_claim_streaming():
+    profiles = [
+        GroqWhisperSpeechProvider(api_key="x").profile,
+        AssemblyAiSpeechProvider(api_key="x").profile,
+        GeminiSpeechProvider(api_key="x").profile,
+        ElevenLabsScribeSpeechProvider(api_key="x").profile,
+    ]
+    assert [profile.model_name for profile in profiles] == [
+        "whisper-large-v3", "universal-2", "gemini-3.5-transcribe", "scribe_v2"
+    ]
+    assert all(profile.supports_streaming is False for profile in profiles)
+
+
+def test_sahara_requires_verified_route_as_well_as_key():
+    provider = SaharaSpeechProvider(api_key="x", endpoint_url=None)
+    assert provider.profile.enabled is False
+    assert "SAHARA_TRANSCRIBE_URL" in (provider.profile.disabled_reason or "")
