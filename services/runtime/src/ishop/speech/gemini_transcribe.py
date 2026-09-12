@@ -85,8 +85,12 @@ class GeminiSpeechProvider(SpeechProvider):
                                           self._model_name, language_hint, self._timeout_seconds)
         transcript = payload.get("output_text", "")
         if not transcript:
-            transcript = "".join(str(item.get("text", "")) for item in payload.get("outputs", [])
-                                 if isinstance(item, dict))
+            transcript = "".join(
+                str(content.get("text", ""))
+                for step in payload.get("steps", []) if isinstance(step, dict)
+                for content in step.get("content", []) if isinstance(content, dict)
+                and content.get("type") == "text"
+            )
         return SpeechTranscriptionResult(transcript.strip(), language_hint, None,
                                          (time.monotonic() - started) * 1000, "gemini",
                                          self._model_name, {"interaction_id": payload.get("id")})

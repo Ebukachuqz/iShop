@@ -49,6 +49,7 @@ def _http_post_multipart(
 
     req_headers = dict(headers)
     req_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    req_headers.setdefault("User-Agent", "iShop-Drake/0.1")
 
     req = urllib.request.Request(url, data=bytes(body), headers=req_headers, method="POST")
     try:
