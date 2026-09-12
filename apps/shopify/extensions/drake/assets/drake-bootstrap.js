@@ -7,10 +7,16 @@
 
   fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } })
     .then((response) => {
-      if (!response.ok) throw new Error(`Bootstrap failed with ${response.status}`);
+      if (!response.ok) {
+        root.dataset.bootstrapState = "failed";
+        root.dataset.bootstrapStatus = String(response.status);
+        throw new Error(`Bootstrap failed with ${response.status}`);
+      }
       return response.json();
     })
     .then(({ grant }) => {
+      root.dataset.bootstrapState = "ready";
+      delete root.dataset.bootstrapStatus;
       window.dispatchEvent(
         new CustomEvent("ishop:bootstrap-ready", {
           detail: { grant, shopDomain: root.dataset.shopDomain },
@@ -18,6 +24,7 @@
       );
     })
     .catch(() => {
+      root.dataset.bootstrapState ||= "failed";
       window.dispatchEvent(new CustomEvent("ishop:bootstrap-failed"));
     });
 })();
