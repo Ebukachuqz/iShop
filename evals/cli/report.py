@@ -68,6 +68,8 @@ def generate_report(results_path: str | Path) -> str:
         f"# iShop Evaluation Report: {run_id}",
         "",
         f"- **Mode:** `{mode}`",
+        f"- **Data kind:** `{data.get('data_kind', 'legacy/unverified')}`",
+        "- Synthetic and scorer self-test outputs are engineering checks, not benchmark evidence.",
         f"- **Normalization Version:** `{norm_v}`",
         f"- **Total Scheduled Cases (Denominator):** {total_episodes}",
         "",

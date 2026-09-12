@@ -102,6 +102,7 @@ class ControllerTurnResult:
     authorized_command: AuthorizedCommand | None = None
     clarification_options: tuple[str, ...] = ()
     reason: str | None = None
+    clarification_fields: tuple[str, ...] = ()
 
 
 class ShoppingController:
@@ -535,6 +536,7 @@ class ShoppingController:
                 spoken_response="Which item would you like to add or update?",
                 extracted_intent=intent,
                 reason="Unresolved product reference requires clarification (T-03)",
+                clarification_fields=("product_query",),
             )
 
         qty = intent.quantity_change.value if intent.quantity_change else 1
@@ -666,6 +668,7 @@ class ShoppingController:
                     spoken_response=spoken,
                     extracted_intent=intent,
                     clarification_options=tuple(opts),
+                    clarification_fields=tuple(resolution.missing_options),
                     reason=resolution.reason,
                 )
 
@@ -694,6 +697,7 @@ class ShoppingController:
                         session_id, turn_id, request_revision, page_epoch, "clarification_needed",
                         "Is that budget for each item or the total requested quantity?",
                         extracted_intent=intent, reason="Unresolved budget scope",
+                        clarification_fields=("budget_scope",),
                     )
                 try:
                     budget_money = Money.from_string(

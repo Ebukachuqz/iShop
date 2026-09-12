@@ -70,6 +70,8 @@ def test_r01_missing_asr_hypothesis_remains_visible_failure():
         mode="controlled_asr",  # Non-human-transcript benchmark mode
         normalization_version="ishop-unicode-v1",
         episodes=[ep],
+        configuration=EvaluationRunner(create_mock_evidence()).configuration,
+        data_kind="synthetic",
     )
 
     # Run without providing hypothesis for ep_test_missing_asr
@@ -104,6 +106,8 @@ def test_r01_hypothesis_change_changes_downstream_action_without_gold_access():
         mode="controlled_asr",
         normalization_version="ishop-unicode-v1",
         episodes=[ep],
+        configuration=EvaluationRunner(create_mock_evidence()).configuration,
+        data_kind="synthetic",
     )
 
     # 1. Provide hypothesis requesting red shirt
@@ -170,6 +174,8 @@ def test_r11_manifest_validation_rejects_tampered_hash(tmp_path: Path):
         mode="benchmark",
         normalization_version="ishop-unicode-v1",
         episodes=[ep],
+        configuration=EvaluationRunner(create_mock_evidence()).configuration,
+        data_kind="synthetic",
     )
     m_dict = manifest.to_dict()
     # Tamper with the hash
@@ -198,6 +204,8 @@ def test_r11_manifest_validation_rejects_missing_audio_ref(tmp_path: Path):
         mode="controlled_asr",
         normalization_version="ishop-unicode-v1",
         episodes=[ep],
+        configuration=EvaluationRunner(create_mock_evidence()).configuration,
+        data_kind="synthetic",
     )
     p = tmp_path / "missing_audio_manifest.json"
     p.write_text(json.dumps(manifest.to_dict()), encoding="utf-8")

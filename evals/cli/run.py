@@ -66,7 +66,7 @@ def run_evaluation(manifest_path: str, output_path: str | None = None) -> int:
 
     print(f"Running evaluation: {manifest.run_id} ({len(manifest.episodes)} episodes)...")
     runner = EvaluationRunner(evidence)
-    result = runner.run(manifest)
+    result = runner.run(manifest, base_dir=Path(manifest_path).resolve().parent)
 
     serialized = json.dumps(result.to_dict(), indent=2)
     if output_path:
@@ -92,7 +92,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         "-o",
-        default="evals/tests/fixtures/synthetic_result.json",
+        default="artifacts/runs/synthetic-followup/result.json",
         help="Path to save output JSON results",
     )
     args = parser.parse_args()

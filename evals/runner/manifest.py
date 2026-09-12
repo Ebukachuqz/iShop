@@ -30,13 +30,15 @@ def compute_manifest_hash(
     mode: str,
     normalization_version: str,
     episodes: list[dict[str, Any]] | tuple[Episode, ...] | list[Episode],
+    configuration: dict[str, Any] | None = None,
+    data_kind: str = "research",
 ) -> str:
     """Computes deterministic SHA-256 over run metadata and serialized episodes."""
     serialized_episodes = json.dumps(
         [e.to_dict() if hasattr(e, "to_dict") else e for e in episodes],
         sort_keys=True,
     )
-    content = f"{run_id}|{mode}|{normalization_version}|{serialized_episodes}"
+    content = f"v2|{run_id}|{mode}|{normalization_version}|{serialized_episodes}|{data_kind}|{json.dumps(configuration or {}, sort_keys=True)}"
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
@@ -50,6 +52,9 @@ class Episode:
     human_transcript: str
     speaker_id: str | None = None
     audio_ref: str | None = None
+    audio_sha256: str | None = None
+    goal: str = "cart"
+    clarification_fields: tuple[str, ...] = ()
     initial_cart_lines: tuple[dict[str, Any], ...] = ()
     expected_cart_lines: tuple[dict[str, Any], ...] = ()
     critical_slots: dict[str, Any] = field(default_factory=dict)
@@ -75,7 +80,9 @@ class RunManifest:
     mode: str  # "human_transcript" | "controlled_asr" | "simulator"
     normalization_version: str
     episodes: tuple[Episode, ...]
-    manifest_version: str = "1.0.0"
+    configuration: dict[str, Any] = field(default_factory=dict)
+    data_kind: str = "research"
+    manifest_version: str = "2.0.0"
     manifest_hash: str = ""
 
     def verify_hash(self) -> bool:
@@ -85,6 +92,7 @@ class RunManifest:
             mode=self.mode,
             normalization_version=self.normalization_version,
             episodes=self.episodes,
+            configuration=self.configuration, data_kind=self.data_kind,
         )
         return self.manifest_hash == expected
 
@@ -96,12 +104,14 @@ class RunManifest:
         mode: str,
         normalization_version: str,
         episodes: list[Episode],
+        configuration: dict[str, Any] | None = None,
+        data_kind: str = "research",
     ) -> RunManifest:
         manifest_hash = compute_manifest_hash(
             run_id=run_id,
             mode=mode,
             normalization_version=normalization_version,
-            episodes=episodes,
+            episodes=episodes, configuration=configuration, data_kind=data_kind,
         )
 
         return cls(
@@ -110,12 +120,15 @@ class RunManifest:
             mode=mode,
             normalization_version=normalization_version,
             episodes=tuple(episodes),
+            configuration=configuration or {}, data_kind=data_kind,
             manifest_hash=manifest_hash,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "manifest_version": self.manifest_version,
+            "configuration": self.configuration,
+            "data_kind": self.data_kind,
             "run_id": self.run_id,
             "created_at_utc": self.created_at_utc,
             "mode": self.mode,
@@ -135,6 +148,9 @@ class RunManifest:
                 human_transcript=e["human_transcript"],
                 speaker_id=e.get("speaker_id"),
                 audio_ref=e.get("audio_ref"),
+                audio_sha256=e.get("audio_sha256"),
+                goal=e.get("goal", "cart"),
+                clarification_fields=tuple(e.get("clarification_fields", [])),
                 initial_cart_lines=tuple(e.get("initial_cart_lines", [])),
                 expected_cart_lines=tuple(e.get("expected_cart_lines", [])),
                 critical_slots=e.get("critical_slots", {}),
@@ -150,6 +166,8 @@ class RunManifest:
             mode=data["mode"],
             normalization_version=data.get("normalization_version", "ishop-unicode-v1"),
             manifest_version=data.get("manifest_version", "1.0.0"),
+            configuration=data.get("configuration", {}),
+            data_kind=data.get("data_kind", "research"),
             manifest_hash=data.get("manifest_hash", ""),
             episodes=tuple(episodes),
         )
