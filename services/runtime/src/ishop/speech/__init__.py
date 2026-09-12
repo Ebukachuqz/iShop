@@ -7,6 +7,8 @@ from ishop.speech.base import (
     SpeechRegistry,
     SpeechTranscriptionResult,
 )
+from ishop.speech.realtime import RealtimeSpeechSession, SpeechEventKind, SpeechStreamEvent
+from ishop.speech.sahara_stream import SaharaStreamingSession
 
 __all__ = [
     "SpeechProfile",
@@ -14,4 +16,8 @@ __all__ = [
     "SpeechProviderError",
     "SpeechRegistry",
     "SpeechTranscriptionResult",
+    "RealtimeSpeechSession",
+    "SaharaStreamingSession",
+    "SpeechEventKind",
+    "SpeechStreamEvent",
 ]

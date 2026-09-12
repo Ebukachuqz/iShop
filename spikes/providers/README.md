@@ -8,4 +8,10 @@ Example:
 .\.venv\Scripts\python.exe spikes/providers/speech_smoke.py data/private/sample.wav --output artifacts/private/provider-smoke.json
 ```
 
+Sahara realtime STT and female TTS:
+
+```powershell
+.\.venv\Scripts\python.exe spikes/providers/realtime_smoke.py data/private/sample.wav --output artifacts/private/realtime-smoke.json
+```
+
 For Sahara, choose the documented language route explicitly, such as `--sahara-language pcm` for Nigerian Pidgin/English or `--sahara-language yo` for Yoruba/English. Use `--provider sahara` to run only one provider. A smoke result establishes wire compatibility only; it is not a benchmark result.

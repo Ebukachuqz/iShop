@@ -15,7 +15,6 @@ import os
 import time
 import urllib.error
 import urllib.request
-from typing import Any
 
 from ishop.domain.intent import ShoppingIntent
 from ishop.llm.base import (
@@ -37,12 +36,15 @@ DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
-def _http_post_json(url: str, payload_bytes: bytes, headers: dict[str, str], timeout_s: float) -> str:
+def _http_post_json(
+    url: str, payload_bytes: bytes, headers: dict[str, str], timeout_s: float
+) -> str:
     """Execute blocking HTTP request in worker thread with timeout (R7)."""
+    request_headers = {**headers, "User-Agent": "iShop-Drake/0.1"}
     req = urllib.request.Request(
         url=url,
         data=payload_bytes,
-        headers=headers,
+        headers=request_headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -146,7 +148,6 @@ class GeminiLlmProvider(LlmProvider):
                 cause=e,
             ) from e
 
-        # Extract text part from Gemini response
         try:
             candidates = res_json.get("candidates", [])
             if not candidates:
@@ -181,7 +182,6 @@ class GeminiLlmProvider(LlmProvider):
 
     async def generate_grounded_response(self, context: GroundedResponseContext) -> str:
         if not self._profile.enabled or not self._api_key:
-            # Fallback truthful offline template when key is absent
             if context.execution_receipt_summary:
                 return f"Done! {context.execution_receipt_summary}."
             if context.error_reason:
@@ -201,7 +201,9 @@ class GeminiLlmProvider(LlmProvider):
             "contents": [
                 {
                     "role": "user",
-                    "parts": [{"text": f"{GROUNDED_RESPONSE_SYSTEM_PROMPT}\n\n" + "\n".join(prompt_parts)}],
+                    "parts": [
+                        {"text": f"{GROUNDED_RESPONSE_SYSTEM_PROMPT}\n\n" + "\n".join(prompt_parts)}
+                    ],
                 }
             ],
             "generationConfig": {"temperature": 0.2},
