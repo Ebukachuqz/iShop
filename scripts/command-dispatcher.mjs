@@ -17,9 +17,18 @@ let overallExitCode = 0;
 
 function runStep(name, cmd, cmdArgs) {
   console.log(`\n--- Running: ${name} ---`);
+  const pathSep = process.platform === 'win32' ? ';' : ':';
+  const customPythonPath = ['services/runtime/src', '.', process.env.PYTHONPATH]
+    .filter(Boolean)
+    .join(pathSep);
+
   const result = spawnSync(cmd, cmdArgs, {
     stdio: 'inherit',
     shell: true,
+    env: {
+      ...process.env,
+      PYTHONPATH: customPythonPath,
+    },
   });
 
   if (result.error) {
@@ -106,7 +115,7 @@ switch (command) {
     runStep(
       'Python Unit & Domain Tests',
       'python',
-      ['-m', 'pytest', 'services/runtime/tests', 'tests', '-v']
+      ['-m', 'pytest', 'services/runtime/tests', 'tests', 'evals/tests', '-v']
     );
 
     if (overallExitCode !== 0) {
@@ -153,17 +162,50 @@ switch (command) {
   }
 
   case 'eval:validate': {
-    notImplemented('eval:validate', 'WP-06', 'WP-06.md');
+    console.log('[iShop] Validating evaluation manifest...');
+    runStep(
+      'Evaluation Manifest Validation',
+      'python',
+      ['-m', 'evals.cli.validate', ...args]
+    );
+
+    if (overallExitCode !== 0) {
+      console.error('\n[iShop] Manifest validation FAILED.');
+      process.exit(overallExitCode);
+    }
+    console.log('\n[iShop] Manifest validation passed.');
     break;
   }
 
   case 'eval:run': {
-    notImplemented('eval:run', 'WP-06 & WP-08', 'WP-06.md');
+    console.log('[iShop] Running evaluation suite...');
+    runStep(
+      'Evaluation Run Execution',
+      'python',
+      ['-m', 'evals.cli.run', ...args]
+    );
+
+    if (overallExitCode !== 0) {
+      console.error('\n[iShop] Evaluation run FAILED.');
+      process.exit(overallExitCode);
+    }
+    console.log('\n[iShop] Evaluation run completed.');
     break;
   }
 
   case 'eval:report': {
-    notImplemented('eval:report', 'WP-06 & WP-12', 'WP-12.md');
+    console.log('[iShop] Generating evaluation report...');
+    runStep(
+      'Evaluation Report Generation',
+      'python',
+      ['-m', 'evals.cli.report', ...args]
+    );
+
+    if (overallExitCode !== 0) {
+      console.error('\n[iShop] Evaluation report generation FAILED.');
+      process.exit(overallExitCode);
+    }
+    console.log('\n[iShop] Evaluation report generated.');
     break;
   }
 

@@ -1,0 +1,138 @@
+{
+  "manifest_version": "1.0.0",
+  "run_id": "run_synthetic_pilot_001",
+  "created_at_utc": "2026-09-12T00:00:00Z",
+  "mode": "human_transcript",
+  "normalization_version": "ishop-unicode-v1",
+  "manifest_hash": "synth_hash_1234567890abcdef",
+  "episodes": [
+    {
+      "episode_id": "ep_01_valid_pcm",
+      "split": "dev",
+      "speaker_id": "spk_001",
+      "language_pair": "pcm-eng",
+      "human_transcript": "I want buy one red shirt size small",
+      "audio_ref": null,
+      "initial_cart_lines": [],
+      "expected_cart_lines": [
+        {
+          "variant_id": "var_red_s",
+          "quantity": 1,
+          "properties": {},
+          "selling_plan_id": null
+        }
+      ],
+      "critical_slots": {
+        "variant_id": "var_red_s",
+        "quantity": 1
+      },
+      "prohibited_actions": [],
+      "consent_allowed": true,
+      "allowed_processors": ["local", "simulator"]
+    },
+    {
+      "episode_id": "ep_02_yoruba_tones",
+      "split": "dev",
+      "speaker_id": "spk_001",
+      "language_pair": "yo-eng",
+      "human_transcript": "Mo fẹ́ ra shirt pupa kékeré kan",
+      "audio_ref": null,
+      "initial_cart_lines": [],
+      "expected_cart_lines": [
+        {
+          "variant_id": "var_red_s",
+          "quantity": 1,
+          "properties": {},
+          "selling_plan_id": null
+        }
+      ],
+      "critical_slots": {
+        "variant_id": "var_red_s",
+        "quantity": 1
+      },
+      "prohibited_actions": [],
+      "consent_allowed": true,
+      "allowed_processors": ["local", "simulator"]
+    },
+    {
+      "episode_id": "ep_03_consent_blocked",
+      "split": "dev",
+      "speaker_id": "spk_002",
+      "language_pair": "pcm-eng",
+      "human_transcript": "Add two blue shirts",
+      "audio_ref": null,
+      "initial_cart_lines": [],
+      "expected_cart_lines": [
+        {
+          "variant_id": "var_blue_m",
+          "quantity": 2,
+          "properties": {},
+          "selling_plan_id": null
+        }
+      ],
+      "critical_slots": {},
+      "prohibited_actions": [],
+      "consent_allowed": false,
+      "allowed_processors": ["local"]
+    },
+    {
+      "episode_id": "ep_04_silence_empty_ref",
+      "split": "test",
+      "speaker_id": "spk_003",
+      "language_pair": "eng",
+      "human_transcript": "",
+      "audio_ref": null,
+      "initial_cart_lines": [],
+      "expected_cart_lines": [],
+      "critical_slots": {},
+      "prohibited_actions": [],
+      "consent_allowed": true,
+      "allowed_processors": ["local", "simulator"]
+    },
+    {
+      "episode_id": "ep_05_prohibited_action",
+      "split": "test",
+      "speaker_id": "spk_003",
+      "language_pair": "pcm-eng",
+      "human_transcript": "Buy one red shirt but don't add blue",
+      "audio_ref": null,
+      "initial_cart_lines": [],
+      "expected_cart_lines": [
+        {
+          "variant_id": "var_red_s",
+          "quantity": 1,
+          "properties": {},
+          "selling_plan_id": null
+        }
+      ],
+      "critical_slots": {
+        "variant_id": "var_red_s",
+        "quantity": 1
+      },
+      "prohibited_actions": ["add_variant:var_blue_m"],
+      "consent_allowed": true,
+      "allowed_processors": ["local", "simulator"]
+    },
+    {
+      "episode_id": "ep_06_afriswitch_no_speaker",
+      "split": "test",
+      "speaker_id": null,
+      "language_pair": "pcm-eng",
+      "human_transcript": "Abeg give me one red shirt",
+      "audio_ref": null,
+      "initial_cart_lines": [],
+      "expected_cart_lines": [
+        {
+          "variant_id": "var_red_s",
+          "quantity": 1,
+          "properties": {},
+          "selling_plan_id": null
+        }
+      ],
+      "critical_slots": {},
+      "prohibited_actions": [],
+      "consent_allowed": true,
+      "allowed_processors": ["local", "simulator"]
+    }
+  ]
+}

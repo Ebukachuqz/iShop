@@ -25,7 +25,7 @@ members = [
 
 [tool.pytest.ini_options]
 pythonpath = ["services/runtime/src", "."]
-testpaths = ["services/runtime/tests", "tests"]
+testpaths = ["services/runtime/tests", "tests", "evals/tests"]
 python_files = ["test_*.py", "*_test.py"]
 addopts = "-v"
 
