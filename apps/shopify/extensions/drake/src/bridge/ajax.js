@@ -4,8 +4,14 @@
  */
 
 export class AjaxCartAdapter {
-  constructor(baseUrl = '', customFetch = null, shopId = null) {
-    this.baseUrl = baseUrl.replace(/\/+$/, '');
+  constructor(baseUrl = null, customFetch = null, shopId = null) {
+    let resolvedBaseUrl = baseUrl;
+    if (resolvedBaseUrl === null || resolvedBaseUrl === undefined) {
+      resolvedBaseUrl = typeof window !== 'undefined' && window.Shopify?.routes?.root
+        ? window.Shopify.routes.root
+        : '';
+    }
+    this.baseUrl = String(resolvedBaseUrl).replace(/\/+$/, '');
     this.fetch = customFetch || (typeof window !== 'undefined' ? window.fetch.bind(window) : null);
     if (!this.fetch) {
       throw new Error('AjaxCartAdapter requires a fetch implementation');
