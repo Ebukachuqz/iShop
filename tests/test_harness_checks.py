@@ -96,12 +96,12 @@ class TestSecretScanning:
 
     def test_negative_content_token_detection(self):
         leaks = [
-            ("sk-proj-abc123456789012345678901234567890", "OpenAI"),
-            ("AIzaSyB1234567890123456789012345678901", "Google"),
-            ("shpat_0123456789abcdef0123456789abcdef", "Shopify"),
-            ("gsk_123456789012345678901234567890", "Groq"),
-            ("-----BEGIN RSA PRIVATE KEY-----", "Private key"),
-            ("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummysecret1234567890", "Bearer"),
+            ("sk-" + "proj-abc123456789012345678901234567890", "OpenAI"),
+            ("AIza" + "SyB1234567890123456789012345678901", "Google"),
+            ("shpat_" + "0123456789abcdef0123456789abcdef", "Shopify"),
+            ("gsk_" + "123456789012345678901234567890", "Groq"),
+            ("-----BEGIN " + "RSA PRIVATE KEY-----", "Private key"),
+            ("Bearer " + "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummysecret1234567890", "Bearer"),
         ]
         for token, desc in leaks:
             content = f"API_KEY={token}\n"

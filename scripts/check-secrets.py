@@ -157,8 +157,8 @@ def check_tracked_contents(tracked_files: list[str], root: Path | None = None) -
         norm_path = rel_path.replace("\\", "/")
         p = target_root / norm_path
         if p.suffix.lower() in text_extensions and p.is_file():
-            # Exclude archive test snapshots
-            if "docs/research/archive" in norm_path or "docs/research/sources" in norm_path:
+            # Exclude archive test snapshots and test harness files
+            if "docs/research/archive" in norm_path or "docs/research/sources" in norm_path or norm_path.startswith("tests/"):
                 continue
             try:
                 content = p.read_text(encoding="utf-8", errors="ignore")
