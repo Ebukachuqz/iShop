@@ -20,7 +20,6 @@ artifacts/browser/
 # Local state and dependency/build outputs
 node_modules/
 .venv/
-.runtime-data/
 __pycache__/
 *.pyc
 .pytest_cache/
