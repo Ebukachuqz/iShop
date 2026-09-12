@@ -12,6 +12,7 @@ Enforces Safety invariants:
 from __future__ import annotations
 
 import datetime
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -108,8 +109,12 @@ class CommandReconciler:
             # Must reconcile against live cart without repeating dispatch! (S-10)
             return self.reconcile_uncertain(command, adapter, transport_name=transport_name)
 
-        # 2. Record PREPARED in journal
-        self.journal.prepare_command(command)
+        # Read live before-cart for lease check, precondition check, and journal persistence
+        before_cart = adapter.read_cart()
+        before_fp = before_cart.fingerprint()
+
+        # 2. Record PREPARED in journal with before_cart persisted (S-10, T-13)
+        self.journal.prepare_command(command, before_cart=before_cart)
 
         # 3. Check lease expiration (S-09)
         now_ms = int(time.time() * 1000)
@@ -120,13 +125,12 @@ class CommandReconciler:
                 transport=transport_name,
                 message="Command lease expired before dispatch (S-09)",
                 errors=["Lease expired"],
+                before_fp=before_fp,
+                after_fp=before_fp,
             )
             return receipt
 
         # 4. Precondition check: verify live before-cart matches expected fingerprint (S-09)
-        before_cart = adapter.read_cart()
-        before_fp = before_cart.fingerprint()
-
         if command.expected_cart_fingerprint is not None:
             if before_fp != command.expected_cart_fingerprint:
                 receipt = self._finalize(
@@ -229,45 +233,67 @@ class CommandReconciler:
         transport_name: str = "simulator",
     ) -> ExecutionReceipt:
         """Reconciles in-flight or recovered command against authoritative live cart (T-13, T-14)."""
+        existing = self.journal.get_entry(command.command_id)
+        if not existing:
+            self.journal.prepare_command(command, before_cart=before_cart)
+            self.journal.mark_dispatched(command.command_id)
+        elif before_cart is None and existing.before_cart_json:
+            try:
+                before_cart = CartSnapshot.from_dict(json.loads(existing.before_cart_json))
+            except Exception:
+                before_cart = None
+
         live_cart = adapter.read_cart()
         live_fp = live_cart.fingerprint()
 
-        # If before_cart is not provided (e.g. after process restart, T-13),
-        # we check if live cart contains the target item in target quantity
-        params = command.parameters
-        variant_id = params.get("variant_id")
-        target_qty = params.get("quantity", 0)
-        target_line_key = params.get("target_line_key")
-        norm_props = {str(k): str(v) for k, v in sorted(params.get("properties", {}).items())}
-        selling_plan_id = params.get("selling_plan_id")
-
-        matched = False
-        if command.operation == CommandOperation.REMOVE_LINE:
-            # Succeeded if target line is absent
-            line_present = any(
-                l.canonical_key == target_line_key or l.variant_id == variant_id
-                for l in live_cart.lines
-            )
-            matched = not line_present
+        if before_cart is not None:
+            expected_cart = self.compute_expected_cart(before_cart, command)
+            if live_cart.is_equivalent(expected_cart):
+                outcome = ExecutionOutcome.VERIFIED_SUCCESS
+                msg = "Reconciled uncertain command: live cart matches expected change (T-13, T-14)"
+                errors = []
+            elif live_cart.is_equivalent(before_cart):
+                outcome = ExecutionOutcome.UNCERTAIN
+                msg = "Reconciled uncertain command: mutation was not observed on live cart; retry prohibited (S-10, T-14)"
+                errors = ["Mutation not confirmed on live cart"]
+            else:
+                outcome = ExecutionOutcome.FAILED_WITH_CHANGE
+                msg = "Reconciled uncertain command: live cart state diverged from expected effect (S-06, S-08)"
+                errors = ["Live cart state diverged from expected effect"]
         else:
-            for line in live_cart.lines:
-                if (
-                    line.variant_id == variant_id
-                    and line.properties == norm_props
-                    and line.selling_plan_id == selling_plan_id
-                ):
-                    if line.quantity == target_qty:
-                        matched = True
-                        break
+            params = command.parameters
+            variant_id = params.get("variant_id")
+            target_qty = params.get("quantity", 0)
+            target_line_key = params.get("target_line_key")
+            norm_props = {str(k): str(v) for k, v in sorted(params.get("properties", {}).items())}
+            selling_plan_id = params.get("selling_plan_id")
 
-        if matched:
-            outcome = ExecutionOutcome.VERIFIED_SUCCESS
-            msg = "Reconciled uncertain command: live cart satisfies expected effect (T-13, T-14)"
-            errors = []
-        else:
-            outcome = ExecutionOutcome.UNCERTAIN
-            msg = "Reconciled uncertain command: mutation was not observed on live cart; retry prohibited (S-10, T-14)"
-            errors = ["Mutation not confirmed on live cart"]
+            matched = False
+            if command.operation == CommandOperation.REMOVE_LINE:
+                line_present = any(
+                    l.canonical_key == target_line_key or l.variant_id == variant_id
+                    for l in live_cart.lines
+                )
+                matched = not line_present
+            else:
+                for line in live_cart.lines:
+                    if (
+                        line.variant_id == variant_id
+                        and line.properties == norm_props
+                        and line.selling_plan_id == selling_plan_id
+                    ):
+                        if line.quantity == target_qty:
+                            matched = True
+                            break
+
+            if matched:
+                outcome = ExecutionOutcome.VERIFIED_SUCCESS
+                msg = "Reconciled uncertain command: live cart satisfies expected effect (T-13, T-14)"
+                errors = []
+            else:
+                outcome = ExecutionOutcome.UNCERTAIN
+                msg = "Reconciled uncertain command: mutation was not observed on live cart; retry prohibited (S-10, T-14)"
+                errors = ["Mutation not confirmed on live cart"]
 
         receipt = self._finalize(
             command=command,
@@ -321,51 +347,132 @@ class CommandReconciler:
 
         return primary_receipt
 
+    def compute_expected_cart(
+        self,
+        before_cart: CartSnapshot,
+        command: AuthorizedCommand,
+    ) -> CartSnapshot:
+        """Computes authoritative expected CartSnapshot after applying command (S-06, S-08, T-10)."""
+        params = command.parameters
+        variant_id = params.get("variant_id")
+        target_qty = params.get("quantity", 1)
+        norm_props = {str(k): str(v) for k, v in sorted(params.get("properties", {}).items())}
+        selling_plan_id = params.get("selling_plan_id")
+        target_key = params.get("target_line_key")
+        shopify_line_key = params.get("shopify_line_key")
+
+        expected_lines: list[CartLine] = [
+            CartLine(
+                variant_id=l.variant_id,
+                quantity=l.quantity,
+                selling_plan_id=l.selling_plan_id,
+                properties=dict(l.properties),
+                shopify_line_key=l.shopify_line_key,
+            )
+            for l in before_cart.lines
+        ]
+
+        if command.operation in (CommandOperation.REMOVE_LINE, "remove_line"):
+            expected_lines = [
+                l for l in expected_lines
+                if not (
+                    (target_key and (l.shopify_line_key == target_key or l.canonical_key == target_key))
+                    or (variant_id and l.variant_id == variant_id and l.properties == norm_props and l.selling_plan_id == selling_plan_id)
+                    or (variant_id and l.variant_id == variant_id and not target_key and not norm_props)
+                )
+            ]
+            return CartSnapshot(shop_id=before_cart.shop_id, currency=before_cart.currency, lines=tuple(expected_lines))
+
+        elif command.operation in (CommandOperation.SET_LINE_QUANTITY, "set_line_quantity", "update_line_quantity"):
+            if target_qty <= 0:
+                expected_lines = [
+                    l for l in expected_lines
+                    if not (
+                        (target_key and (l.shopify_line_key == target_key or l.canonical_key == target_key))
+                        or (variant_id and l.variant_id == variant_id and l.properties == norm_props and l.selling_plan_id == selling_plan_id)
+                        or (variant_id and l.variant_id == variant_id and not target_key)
+                    )
+                ]
+            else:
+                updated_lines: list[CartLine] = []
+                updated = False
+                for l in expected_lines:
+                    if not updated and (
+                        (target_key and (l.shopify_line_key == target_key or l.canonical_key == target_key))
+                        or (variant_id and l.variant_id == variant_id and l.properties == norm_props and l.selling_plan_id == selling_plan_id)
+                    ):
+                        updated_lines.append(
+                            CartLine(
+                                variant_id=l.variant_id,
+                                quantity=target_qty,
+                                selling_plan_id=l.selling_plan_id,
+                                properties=dict(l.properties),
+                                shopify_line_key=l.shopify_line_key,
+                            )
+                        )
+                        updated = True
+                    else:
+                        updated_lines.append(l)
+
+                if not updated and variant_id:
+                    updated_lines.append(
+                        CartLine(
+                            variant_id=variant_id,
+                            quantity=target_qty,
+                            selling_plan_id=selling_plan_id,
+                            properties=norm_props,
+                            shopify_line_key=shopify_line_key,
+                        )
+                    )
+                expected_lines = updated_lines
+            return CartSnapshot(shop_id=before_cart.shop_id, currency=before_cart.currency, lines=tuple(expected_lines))
+
+        elif command.operation in (CommandOperation.ADD_VARIANT, "add_variant", "add_line", "add_item"):
+            updated_lines = []
+            found = False
+            for l in expected_lines:
+                if (
+                    not found
+                    and l.variant_id == variant_id
+                    and l.properties == norm_props
+                    and l.selling_plan_id == selling_plan_id
+                ):
+                    updated_lines.append(
+                        CartLine(
+                            variant_id=l.variant_id,
+                            quantity=l.quantity + target_qty,
+                            selling_plan_id=l.selling_plan_id,
+                            properties=dict(l.properties),
+                            shopify_line_key=l.shopify_line_key,
+                        )
+                    )
+                    found = True
+                else:
+                    updated_lines.append(l)
+
+            if not found:
+                updated_lines.append(
+                    CartLine(
+                        variant_id=variant_id,
+                        quantity=target_qty,
+                        selling_plan_id=selling_plan_id,
+                        properties=norm_props,
+                        shopify_line_key=shopify_line_key,
+                    )
+                )
+            return CartSnapshot(shop_id=before_cart.shop_id, currency=before_cart.currency, lines=tuple(updated_lines))
+
+        return CartSnapshot(shop_id=before_cart.shop_id, currency=before_cart.currency, lines=tuple(expected_lines))
+
     def _verify_expected_change(
         self,
         command: AuthorizedCommand,
         before_cart: CartSnapshot,
         after_cart: CartSnapshot,
     ) -> bool:
-        """Validates that expected line was modified and unrelated lines were preserved (S-08, T-10)."""
-        params = command.parameters
-        variant_id = params.get("variant_id")
-        target_qty = params.get("quantity", 0)
-        norm_props = {str(k): str(v) for k, v in sorted(params.get("properties", {}).items())}
-        selling_plan_id = params.get("selling_plan_id")
-        target_key = params.get("target_line_key")
-
-        # 1. Construct expected line
-        expected_line = CartLine(
-            variant_id=variant_id,
-            quantity=target_qty,
-            selling_plan_id=selling_plan_id,
-            properties=norm_props,
-        )
-
-        # 2. Verify unrelated lines are preserved (S-08, T-10)
-        target_canonical = expected_line.canonical_key
-        for line in before_cart.lines:
-            if line.canonical_key != target_canonical and line.canonical_key != target_key:
-                # This is an unrelated line. It must exist in after_cart with the exact same quantity!
-                after_matching = [l for l in after_cart.lines if l.canonical_key == line.canonical_key]
-                if not after_matching or after_matching[0].quantity != line.quantity:
-                    # Unrelated line was corrupted! (S-08 violation)
-                    return False
-
-        # 3. Verify target line in after_cart
-        if command.operation == CommandOperation.REMOVE_LINE or target_qty == 0:
-            # Line must be absent from after_cart
-            for line in after_cart.lines:
-                if line.canonical_key == target_canonical or line.canonical_key == target_key:
-                    return False
-            return True
-        else:
-            # Line must be present with target quantity
-            for line in after_cart.lines:
-                if line.canonical_key == target_canonical or line.canonical_key == target_key:
-                    return line.quantity == target_qty
-            return False
+        """Validates that authoritative after_cart matches exact expected multiset (S-08, T-10)."""
+        expected_cart = self.compute_expected_cart(before_cart, command)
+        return after_cart.is_equivalent(expected_cart)
 
     def _finalize(
         self,

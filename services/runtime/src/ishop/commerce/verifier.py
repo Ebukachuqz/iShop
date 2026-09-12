@@ -138,14 +138,18 @@ class CartVerifier:
             resolved_variant = target_line.variant_id
             resolved_props = target_line.properties
             resolved_plan = target_line.selling_plan_id
-            target_key = target_line.canonical_key
+            shopify_key = target_line.shopify_line_key
+            canonical_key = target_line.canonical_key
+            target_key = shopify_key or canonical_key
         elif target_line:
             # Updating existing line
             command_op = CommandOperation.SET_LINE_QUANTITY
             resolved_variant = target_line.variant_id
             resolved_props = target_line.properties
             resolved_plan = target_line.selling_plan_id
-            target_key = target_line.canonical_key
+            shopify_key = target_line.shopify_line_key
+            canonical_key = target_line.canonical_key
+            target_key = shopify_key or canonical_key
         else:
             # Adding new variant line
             if not action.variant_id:
@@ -163,7 +167,9 @@ class CartVerifier:
                 selling_plan_id=resolved_plan,
                 properties=resolved_props,
             )
-            target_key = dummy_line.canonical_key
+            canonical_key = dummy_line.canonical_key
+            target_key = canonical_key
+            shopify_key = None
 
         # 3. Mint AuthorizedCommand (S-01, S-09)
         cmd_id = f"cmd_{uuid.uuid4().hex}"
@@ -173,6 +179,8 @@ class CartVerifier:
             "properties": resolved_props,
             "selling_plan_id": resolved_plan,
             "target_line_key": target_key,
+            "canonical_line_key": canonical_key,
+            "shopify_line_key": shopify_key,
         }
 
         command = AuthorizedCommand(

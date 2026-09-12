@@ -10,7 +10,7 @@
 import { AjaxCartAdapter } from './ajax.js';
 import { StandardActionsAdapter } from './standard_actions.js';
 import { WebMcpAdapter } from './webmcp.js';
-import { isCartEquivalent } from '../../../../../../packages/contracts/src/browser.js';
+import { computeExpectedCart, isCartEquivalent } from '../../../../../../packages/contracts/src/browser.js';
 
 export class StorefrontBridge {
   constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null } = {}) {
@@ -83,8 +83,21 @@ export class StorefrontBridge {
       };
     }
 
-    // 2. Authoritative post-mutation read-back (S-06, T-08)
+    // 2. Authoritative post-mutation read-back (S-06, T-08, S-08, T-10)
     const afterCart = await this.readAuthoritativeCart();
+    const expectedCart = computeExpectedCart(beforeCart, command);
+
+    const isMatch = isCartEquivalent(afterCart, expectedCart);
+    if (!isMatch) {
+      return {
+        ok: false,
+        outcome: 'failed_with_observed_change',
+        transport_used: transport,
+        errors: ['Authoritative cart read-back does not match expected effect (unintended extra lines or corrupted cart)'],
+        before_cart: beforeCart,
+        after_cart: afterCart,
+      };
+    }
 
     return {
       ok: true,

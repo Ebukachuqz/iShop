@@ -100,12 +100,14 @@ class CartLine:
 
     Identity key is based on (variant_id, selling_plan_id, normalized_properties).
     Multiple lines with different properties or subscription plans remain distinct.
+    shopify_line_key preserves the ephemeral Storefront API/theme line locator (R5).
     """
 
     variant_id: str
     quantity: int
     selling_plan_id: str | None = None
     properties: dict[str, str] = field(default_factory=dict)
+    shopify_line_key: str | None = None
 
     def __post_init__(self):
         if self.quantity < 0:
@@ -119,6 +121,25 @@ class CartLine:
         plan_part = self.selling_plan_id if self.selling_plan_id else "none"
         props_part = "&".join(f"{k}={v}" for k, v in self.properties.items())
         return f"{self.variant_id}::{plan_part}::{props_part}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "variant_id": self.variant_id,
+            "quantity": self.quantity,
+            "selling_plan_id": self.selling_plan_id,
+            "properties": dict(self.properties),
+            "shopify_line_key": self.shopify_line_key,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CartLine:
+        return cls(
+            variant_id=str(data["variant_id"]),
+            quantity=int(data["quantity"]),
+            selling_plan_id=data.get("selling_plan_id"),
+            properties=data.get("properties") or {},
+            shopify_line_key=data.get("shopify_line_key"),
+        )
 
 
 @dataclass(frozen=True)
@@ -154,6 +175,23 @@ class CartSnapshot:
         if self.shop_id != other.shop_id or self.currency != other.currency:
             return False
         return self.multiset_counter() == other.multiset_counter()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "shop_id": self.shop_id,
+            "currency": self.currency,
+            "lines": [line.to_dict() for line in self.lines],
+            "cart_token_hash": self.cart_token_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CartSnapshot:
+        return cls(
+            shop_id=str(data["shop_id"]),
+            currency=str(data["currency"]),
+            lines=tuple(CartLine.from_dict(l) for l in data.get("lines", [])),
+            cart_token_hash=data.get("cart_token_hash"),
+        )
 
 
 class CommandOperation(str, Enum):

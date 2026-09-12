@@ -100,7 +100,20 @@ class ShopifySimulator:
                 selling_plan_id=selling_plan_id,
             )
         )
-        return key
+    def set_cart(self, cart: CartSnapshot):
+        """Replace simulator lines with snapshot lines."""
+        self.shop_id = cart.shop_id
+        self.currency = cart.currency
+        self._lines = [
+            SimulatedLine(
+                line_key=getattr(line, "shopify_line_key", None) or f"line_{uuid.uuid4().hex[:12]}",
+                variant_id=line.variant_id,
+                quantity=line.quantity,
+                properties=dict(line.properties),
+                selling_plan_id=line.selling_plan_id,
+            )
+            for line in cart.lines
+        ]
 
     def read_cart(self) -> CartSnapshot:
         cart_lines = tuple(line.to_cart_line() for line in self._lines if line.quantity > 0)

@@ -97,6 +97,119 @@ export function isCartEquivalent(cartA, cartB) {
 }
 
 /**
+ * Computes the expected CartSnapshot after applying a command to beforeCart (S-06, S-08, T-10).
+ */
+export function computeExpectedCart(beforeCart, command) {
+  if (!beforeCart) return null;
+  const shopId = beforeCart.shop_id;
+  const currency = beforeCart.currency;
+  const params = command?.parameters || {};
+  const op = command?.operation;
+
+  // Deep copy existing lines
+  const lines = (beforeCart.lines || []).map((l) => ({
+    variant_id: l.variant_id,
+    quantity: Number(l.quantity || 0),
+    selling_plan_id: l.selling_plan_id || null,
+    properties: normalizeProperties(l.properties),
+    line_key: l.line_key || l.id || null,
+  }));
+
+  if (op === 'clear_cart') {
+    return { shop_id: shopId, currency, lines: [] };
+  }
+
+  const targetLineKey = params.target_line_key || params.line_key;
+  const variantId = params.variant_id ? String(params.variant_id) : null;
+  const targetQuantity = Number(params.quantity ?? 1);
+  const targetSellingPlan = params.selling_plan_id || null;
+  const targetProperties = normalizeProperties(params.properties);
+
+  if (op === 'remove_line') {
+    const filtered = lines.filter((l) => {
+      if (targetLineKey && (l.line_key === targetLineKey || canonicalLineKey(l) === targetLineKey)) {
+        return false;
+      }
+      if (variantId && String(l.variant_id) === variantId) {
+        if (!targetLineKey || canonicalLineKey(l) === canonicalLineKey({ variant_id: variantId, selling_plan_id: targetSellingPlan, properties: targetProperties })) {
+          return false;
+        }
+      }
+      return true;
+    });
+    return { shop_id: shopId, currency, lines: filtered };
+  }
+
+  if (op === 'set_line_quantity' || op === 'update_line_quantity') {
+    if (targetQuantity <= 0) {
+      const filtered = lines.filter((l) => {
+        if (targetLineKey && (l.line_key === targetLineKey || canonicalLineKey(l) === targetLineKey)) {
+          return false;
+        }
+        if (variantId && String(l.variant_id) === variantId) {
+          return false;
+        }
+        return true;
+      });
+      return { shop_id: shopId, currency, lines: filtered };
+    }
+
+    let updated = false;
+    for (const l of lines) {
+      if (
+        (targetLineKey && (l.line_key === targetLineKey || canonicalLineKey(l) === targetLineKey)) ||
+        (variantId && String(l.variant_id) === variantId && canonicalLineKey(l) === canonicalLineKey({ variant_id: variantId, selling_plan_id: targetSellingPlan, properties: targetProperties }))
+      ) {
+        l.quantity = targetQuantity;
+        updated = true;
+        break;
+      }
+    }
+    if (!updated && variantId) {
+      lines.push({
+        variant_id: variantId,
+        quantity: targetQuantity,
+        selling_plan_id: targetSellingPlan,
+        properties: targetProperties,
+        line_key: params.shopify_line_key || null,
+      });
+    }
+    return { shop_id: shopId, currency, lines };
+  }
+
+  if (op === 'add_variant' || op === 'add_line' || op === 'add_item') {
+    const targetCanonical = canonicalLineKey({
+      variant_id: variantId,
+      selling_plan_id: targetSellingPlan,
+      properties: targetProperties,
+    });
+
+    let existing = null;
+    for (const l of lines) {
+      if (canonicalLineKey(l) === targetCanonical) {
+        existing = l;
+        break;
+      }
+    }
+
+    if (existing) {
+      existing.quantity += targetQuantity;
+    } else {
+      lines.push({
+        variant_id: variantId,
+        quantity: targetQuantity,
+        selling_plan_id: targetSellingPlan,
+        properties: targetProperties,
+        line_key: params.shopify_line_key || null,
+      });
+    }
+    return { shop_id: shopId, currency, lines };
+  }
+
+  return { shop_id: shopId, currency, lines };
+}
+
+/**
  * Validates basic command safety rules (Safety S-01, S-02).
  */
 export function validateCommandSafety(command) {

@@ -4,12 +4,13 @@
  */
 
 export class AjaxCartAdapter {
-  constructor(baseUrl = '', customFetch = null) {
+  constructor(baseUrl = '', customFetch = null, shopId = null) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.fetch = customFetch || (typeof window !== 'undefined' ? window.fetch.bind(window) : null);
     if (!this.fetch) {
       throw new Error('AjaxCartAdapter requires a fetch implementation');
     }
+    this.shopId = shopId;
   }
 
   async readCart() {
@@ -98,8 +99,14 @@ export class AjaxCartAdapter {
       };
     });
 
+    const resolvedShopId =
+      this.shopId ||
+      (typeof window !== 'undefined' && window.Shopify && window.Shopify.shop
+        ? window.Shopify.shop
+        : 'unknown.myshopify.com');
+
     return {
-      shop_id: ajaxResponse.token ? `${ajaxResponse.token}.myshopify.com` : 'unknown.myshopify.com',
+      shop_id: resolvedShopId,
       currency: ajaxResponse.currency || 'USD',
       lines: lines,
     };

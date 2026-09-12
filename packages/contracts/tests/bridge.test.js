@@ -162,4 +162,50 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
     assert.equal(receipt.outcome, 'rejected');
     assert.deepEqual(receipt.errors, ['Item inventory exceeded']);
   });
+
+  test('R3: Bridge executeCommand fails if post-mutation cart contains unexpected extra lines', async () => {
+    let callCount = 0;
+    const mutatingAjax = {
+      addVariant: async () => ({ ok: true, errors: [] }),
+      readCart: async () => {
+        callCount++;
+        if (callCount === 1) {
+          // before cart: hoodie only
+          return {
+            shop_id: 'store.myshopify.com',
+            currency: 'USD',
+            lines: [{ variant_id: 'var_hoodie', quantity: 1, properties: {} }],
+          };
+        }
+        // after cart: hoodie + cap + unexpected bonus socks!
+        return {
+          shop_id: 'store.myshopify.com',
+          currency: 'USD',
+          lines: [
+            { variant_id: 'var_hoodie', quantity: 1, properties: {} },
+            { variant_id: 'var_cap', quantity: 1, properties: {} },
+            { variant_id: 'var_unexpected_socks', quantity: 1, properties: {} },
+          ],
+        };
+      },
+    };
+
+    const bridge = new StorefrontBridge({
+      ajaxAdapter: mutatingAjax,
+      webMcpAdapter: { isAvailable: () => false },
+      actionsAdapter: { isAvailable: () => false },
+    });
+
+    const command = {
+      command_id: 'cmd_test_003',
+      operation: 'add_variant',
+      parameters: { variant_id: 'var_cap', quantity: 1 },
+    };
+
+    const receipt = await bridge.executeCommand(command);
+
+    assert.notEqual(receipt.outcome, 'verified_success', 'Bridge must NOT report verified_success when extra line was added');
+    assert.equal(receipt.ok, false);
+    assert.equal(receipt.outcome, 'failed_with_observed_change');
+  });
 });

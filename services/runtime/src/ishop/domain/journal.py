@@ -8,6 +8,7 @@ Enforces Safety invariants:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from ishop.domain.models import AuthorizedCommand, CommandOperation
+from ishop.domain.models import AuthorizedCommand, CartSnapshot, CommandOperation
 
 
 class CommandStatus(str, Enum):
@@ -43,6 +44,9 @@ class JournalEntry:
     updated_at_ms: int
     reconciled_message: str | None = None
     receipt_id: str | None = None
+    parameters_json: str | None = None
+    before_cart_json: str | None = None
+    expected_cart_fingerprint: str | None = None
 
 
 class CommandJournal:
@@ -69,7 +73,10 @@ class CommandJournal:
                 created_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL,
                 reconciled_message TEXT,
-                receipt_id TEXT
+                receipt_id TEXT,
+                parameters_json TEXT,
+                before_cart_json TEXT,
+                expected_cart_fingerprint TEXT
             )
             """
         )
@@ -84,7 +91,11 @@ class CommandJournal:
             return self._row_to_entry(row)
         return None
 
-    def prepare_command(self, cmd: AuthorizedCommand) -> JournalEntry:
+    def prepare_command(
+        self,
+        cmd: AuthorizedCommand,
+        before_cart: CartSnapshot | None = None,
+    ) -> JournalEntry:
         """Records a new command in PREPARED state.
 
         If the command ID already exists (replay), returns the existing entry (T-12).
@@ -94,6 +105,9 @@ class CommandJournal:
             return existing
 
         now_ms = int(time.time() * 1000)
+        params_json = json.dumps(cmd.parameters)
+        before_cart_str = json.dumps(before_cart.to_dict()) if before_cart else None
+
         with self._conn:
             self._conn.execute(
                 """
@@ -101,8 +115,9 @@ class CommandJournal:
                     command_id, session_id, shop_id, turn_id,
                     request_revision, page_epoch, operation,
                     status, created_at_ms, updated_at_ms,
-                    reconciled_message, receipt_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reconciled_message, receipt_id,
+                    parameters_json, before_cart_json, expected_cart_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cmd.command_id,
@@ -117,6 +132,9 @@ class CommandJournal:
                     now_ms,
                     None,
                     None,
+                    params_json,
+                    before_cart_str,
+                    cmd.expected_cart_fingerprint,
                 ),
             )
 
@@ -191,6 +209,7 @@ class CommandJournal:
             return cursor.rowcount
 
     def _row_to_entry(self, row: sqlite3.Row) -> JournalEntry:
+        keys = row.keys()
         return JournalEntry(
             command_id=row["command_id"],
             session_id=row["session_id"],
@@ -204,4 +223,7 @@ class CommandJournal:
             updated_at_ms=row["updated_at_ms"],
             reconciled_message=row["reconciled_message"],
             receipt_id=row["receipt_id"],
+            parameters_json=row["parameters_json"] if "parameters_json" in keys else None,
+            before_cart_json=row["before_cart_json"] if "before_cart_json" in keys else None,
+            expected_cart_fingerprint=row["expected_cart_fingerprint"] if "expected_cart_fingerprint" in keys else None,
         )
