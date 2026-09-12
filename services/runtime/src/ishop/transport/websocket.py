@@ -160,6 +160,14 @@ def create_voice_app(
     return app
 
 
+def development_allowed_origins(raw_value: str) -> set[str]:
+    """Parse the explicit local-development origin list."""
+    origins = {value.strip().rstrip("/") for value in raw_value.split(",") if value.strip()}
+    if "*" in origins:
+        raise ValueError("Wildcard storefront origins are forbidden")
+    return origins
+
+
 def _authenticate(
     payload: Any,
     shop_id: str,

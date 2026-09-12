@@ -1,3 +1,22 @@
 packages:
   - 'packages/*'
   - 'apps/*'
+
+onlyBuiltDependencies:
+  - '@parcel/watcher'
+  - '@prisma/client'
+  - '@prisma/engines'
+  - esbuild
+  - prisma
+  - unrs-resolver
+
+overrides:
+  p-map: ^4.0.0
+  qs: ^6.16.0
+allowBuilds:
+  '@parcel/watcher': set this to true or false
+  '@prisma/client': set this to true or false
+  '@prisma/engines': set this to true or false
+  esbuild: set this to true or false
+  prisma: set this to true or false
+  unrs-resolver: set this to true or false

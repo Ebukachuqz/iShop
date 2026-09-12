@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from ishop.domain.models import SessionGrant
 from ishop.speech.base import SpeechProviderError
 from ishop.speech.realtime import SpeechEventKind, SpeechStreamEvent
-from ishop.transport.websocket import create_voice_app
+from ishop.transport.websocket import create_voice_app, development_allowed_origins
 
 SECRET = "voice_transport_test_signing_secret_123456"
 ORIGIN = "https://test.myshopify.com"
@@ -207,3 +207,15 @@ def test_provider_start_failure_is_truthful_and_non_authorizing():
         "error_code": "provider_start_failed",
         "authorizes_interpretation": False,
     }
+
+
+def test_development_origin_parser_rejects_wildcard():
+    assert development_allowed_origins("https://one.example, https://two.example/") == {
+        "https://one.example",
+        "https://two.example",
+    }
+    try:
+        development_allowed_origins("*")
+        raise AssertionError("Wildcard origin was accepted")
+    except ValueError as exc:
+        assert "forbidden" in str(exc)

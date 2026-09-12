@@ -139,6 +139,12 @@ if (isMainModule) {
     // Check 3: Architecture and package boundaries
     runStep('Architectural Boundaries Audit', 'python', ['scripts/check-boundaries.py']);
 
+    runStep(
+      'Shopify App Type Check',
+      'pnpm',
+      ['--filter', '@ishop/shopify-app', 'typecheck']
+    );
+
     if (overallExitCode !== 0) {
       console.error('\n[iShop] One or more workspace validation checks FAILED.');
       process.exit(overallExitCode);
@@ -154,7 +160,13 @@ if (isMainModule) {
     runStep(
       'JavaScript Unit & Contract Tests',
       'node',
-      ['--test', 'packages/contracts/tests']
+      ['--test', 'packages/contracts/tests/*.test.js']
+    );
+
+    runStep(
+      'Shopify App Unit Tests',
+      'pnpm',
+      ['--filter', '@ishop/shopify-app', 'test']
     );
 
     // 2. Python tests (pytest discovering services/runtime and negative harness tests)
