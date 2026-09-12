@@ -69,13 +69,16 @@ class IntentTarget:
     product_id: str | None = None
     title_query: str | None = None
     selected_options: dict[str, str] = field(default_factory=dict)
+    excluded_options: dict[str, str] = field(default_factory=dict)
     quantity: int = 1
 
     def __post_init__(self):
         if self.quantity < 1:
             raise ValueError(f"Target quantity must be >= 1, got {self.quantity}")
         norm_opts = {str(k).lower(): str(v).lower() for k, v in self.selected_options.items()}
+        norm_ex = {str(k).lower(): str(v).lower() for k, v in self.excluded_options.items()}
         object.__setattr__(self, "selected_options", norm_opts)
+        object.__setattr__(self, "excluded_options", norm_ex)
 
 
 @dataclass(frozen=True)
@@ -177,6 +180,11 @@ class CatalogResolver:
                 if variant.selected_options.get(opt_key) != opt_val:
                     matches_all = False
                     break
+            if matches_all and target.excluded_options:
+                for ex_key, ex_val in target.excluded_options.items():
+                    if variant.selected_options.get(ex_key) == ex_val:
+                        matches_all = False
+                        break
             if matches_all:
                 matching_variants.append(variant)
 
