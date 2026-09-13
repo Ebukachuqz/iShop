@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -69,19 +70,22 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         }
         if result.spoken_response:
             try:
-                tts_session = await tts_provider.synthesize(
+                tts_session = await asyncio.wait_for(tts_provider.synthesize(
                     result.spoken_response,
                     generation=payload["request_revision"],
-                )
-                audio_chunks = []
-                async for chunk in tts_session.chunks():
-                    audio_chunks.append({
-                        "audio_base64": base64.b64encode(chunk.audio).decode("ascii"),
-                        "generation": chunk.generation,
-                        "sample_rate": chunk.sample_rate,
-                        "channels": chunk.channels,
-                        "format": chunk.format,
-                    })
+                ), timeout=8)
+                async def collect_tts_chunks() -> list[dict[str, Any]]:
+                    chunks: list[dict[str, Any]] = []
+                    async for chunk in tts_session.chunks():
+                        chunks.append({
+                            "audio_base64": base64.b64encode(chunk.audio).decode("ascii"),
+                            "generation": chunk.generation,
+                            "sample_rate": chunk.sample_rate,
+                            "channels": chunk.channels,
+                            "format": chunk.format,
+                        })
+                    return chunks
+                audio_chunks = await asyncio.wait_for(collect_tts_chunks(), timeout=8)
                 response["tts_audio_chunks"] = audio_chunks
             except Exception:
                 response["tts_audio_chunks"] = []

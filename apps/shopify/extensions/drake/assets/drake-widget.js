@@ -273,7 +273,9 @@
           this.setState("completed", { verifiedReceipt: receipt });
           this.addMessage("assistant", "Your cart is updated and verified.");
         } else {
-          this.setState("failed", { error: "The cart result could not be verified." });
+          const detail = receipt?.errors?.[0] || "The cart result could not be verified. Review the cart before trying again.";
+          this.setState("failed", { error: detail });
+          if (detail) this.addMessage("assistant", detail);
         }
         this.pendingTurn = null;
       } else if (event.type === "closed") {
@@ -386,9 +388,7 @@
       this.setState("updating");
       try {
         const result = await this.bridge.executeCommand(command);
-        if (["verified_success", "verified_no_op", "human_handoff", "navigation_handoff"].includes(result.outcome)) {
-          this.pendingReceipts.set(command.command_id, result);
-        }
+        this.pendingReceipts.set(command.command_id, result);
         this.client.sendCommandResult(command.command_id, result);
         if (result.outcome === "verified_success" || result.outcome === "verified_no_op") {
           this.setState("updating");

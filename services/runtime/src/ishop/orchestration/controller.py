@@ -326,6 +326,23 @@ class ShoppingController:
 
         sess.pending_intents.pop(pending_key, None)
 
+        # Do not silently discard a second requested action when the provider
+        # returns only the first operation. A bounded plan contract can be
+        # introduced later; until then, ask before executing either side.
+        lower_transcript = transcript.casefold()
+        if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE) and "add" in lower_transcript and ("search" in lower_transcript or "find" in lower_transcript):
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status="clarification_needed",
+                spoken_response="I can search first, then add a selected result. Which product should I add?",
+                extracted_intent=intent,
+                clarification_fields=("product_selection",),
+                reason="Compound search-and-add request requires an explicit selected product",
+            )
+
         # 5. Dispatch based on extracted intent operation
         if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE):
             return self._handle_search_and_browse(
