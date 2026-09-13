@@ -30,6 +30,10 @@ export class WebMcpAdapter {
     return tools.find((t) => t.name === 'get_cart') || null;
   }
 
+  async canReadCart() {
+    return Boolean(await this.getCartToolDescriptor());
+  }
+
   async updateCartToolDescriptor() {
     const tools = await this.getDeclaredTools();
     return tools.find((t) => t.name === 'update_cart') || null;
@@ -43,7 +47,7 @@ export class WebMcpAdapter {
 
     const rawResult = await this.modelContext.executeTool(descriptor, JSON.stringify({}));
     const parsed = typeof rawResult === 'string' ? JSON.parse(rawResult) : rawResult;
-    return this.normalizeCart(this.unwrapPayload(parsed));
+    return this.normalizeCart(this.extractCartPayload(parsed));
   }
 
   async updateCart(params) {
@@ -118,5 +122,46 @@ export class WebMcpAdapter {
       break;
     }
     return current;
+  }
+
+  extractCartPayload(value, depth = 0) {
+    if (depth > 6) throw new Error('WebMCP cart response nesting is too deep');
+
+    if (typeof value === 'string') {
+      try {
+        return this.extractCartPayload(JSON.parse(value), depth + 1);
+      } catch (error) {
+        if (error instanceof SyntaxError) throw new Error('WebMCP cart response contains invalid JSON');
+        throw error;
+      }
+    }
+
+    if (!value || typeof value !== 'object') {
+      throw new Error('WebMCP cart response is not an object');
+    }
+    if (Array.isArray(value.lines) || Array.isArray(value.items)) return value;
+
+    for (const key of ['cart', 'structuredContent', 'data', 'result']) {
+      if (value[key] !== undefined && value[key] !== null) {
+        try {
+          return this.extractCartPayload(value[key], depth + 1);
+        } catch (error) {
+          if (!String(error?.message || '').startsWith('WebMCP cart response')) throw error;
+        }
+      }
+    }
+
+    if (Array.isArray(value.content)) {
+      for (const block of value.content) {
+        const candidate = block?.type === 'text' ? block.text : block;
+        try {
+          return this.extractCartPayload(candidate, depth + 1);
+        } catch (error) {
+          if (!String(error?.message || '').startsWith('WebMCP cart response')) throw error;
+        }
+      }
+    }
+
+    throw new Error('WebMCP cart response has no recognized cart payload');
   }
 }

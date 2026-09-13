@@ -34,14 +34,23 @@ export class StorefrontBridge {
   }
 
   async readAuthoritativeCart() {
-    const transport = this.detectPreferredTransport();
-    switch (transport) {
-      case 'native_webmcp':
-        return await this.webMcp.readCart();
-      case 'storefront_actions':
-      case 'ajax_cart':
-      default:
-        return await this.ajax.readCart();
+    let webMcpError = null;
+    if (this.webMcp.isAvailable()) {
+      try {
+        const canRead = typeof this.webMcp.canReadCart !== 'function' || await this.webMcp.canReadCart();
+        if (canRead) return await this.webMcp.readCart();
+      } catch (error) {
+        webMcpError = error;
+      }
+    }
+
+    try {
+      return await this.ajax.readCart();
+    } catch (ajaxError) {
+      if (!webMcpError) throw ajaxError;
+      const error = new Error(`Store cart read failed via WebMCP and Ajax: ${webMcpError.message}; ${ajaxError.message}`);
+      error.cause = { webMcp: webMcpError, ajax: ajaxError };
+      throw error;
     }
   }
 

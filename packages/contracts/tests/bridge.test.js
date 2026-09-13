@@ -13,6 +13,60 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
     assert.equal(cart.shop_id, 'trusted-shop.myshopify.com');
   });
 
+  test('reads cart data from supported WebMCP result envelopes', async () => {
+    const cart = { currency: 'USD', lines: [{ id: 'line_1', merchandiseId: 'variant_1', quantity: 1 }] };
+    const envelopes = [
+      cart,
+      { cart },
+      { structuredContent: { cart } },
+      { content: [{ type: 'text', text: JSON.stringify(cart) }] },
+    ];
+
+    for (const result of envelopes) {
+      const adapter = new WebMcpAdapter({
+        getTools: async () => [{ name: 'get_cart' }],
+        executeTool: async () => result,
+      }, 'store.myshopify.com');
+      const normalized = await adapter.readCart();
+      assert.equal(normalized.lines[0].variant_id, 'variant_1');
+      assert.equal(normalized.shop_id, 'store.myshopify.com');
+    }
+  });
+
+  test('falls back to Ajax when WebMCP cannot provide a readable cart', async () => {
+    let ajaxReads = 0;
+    const expected = { shop_id: 'store.myshopify.com', currency: 'USD', lines: [] };
+    const bridge = new StorefrontBridge({
+      webMcpAdapter: {
+        isAvailable: () => true,
+        canReadCart: async () => true,
+        readCart: async () => { throw new Error('unsupported WebMCP envelope'); },
+      },
+      ajaxAdapter: { readCart: async () => { ajaxReads += 1; return expected; } },
+      actionsAdapter: { isAvailable: () => false },
+    });
+
+    assert.deepEqual(await bridge.readAuthoritativeCart(), expected);
+    assert.equal(ajaxReads, 1);
+  });
+
+  test('uses Ajax when WebMCP does not declare get_cart', async () => {
+    let webMcpReads = 0;
+    const expected = { shop_id: 'store.myshopify.com', currency: 'USD', lines: [] };
+    const adapter = new WebMcpAdapter({
+      getTools: async () => [{ name: 'update_cart' }],
+      executeTool: async () => { webMcpReads += 1; },
+    });
+    const bridge = new StorefrontBridge({
+      webMcpAdapter: adapter,
+      ajaxAdapter: { readCart: async () => expected },
+      actionsAdapter: { isAvailable: () => false },
+    });
+
+    assert.deepEqual(await bridge.readAuthoritativeCart(), expected);
+    assert.equal(webMcpReads, 0);
+  });
+
   test('navigation accepts only same-origin Shopify product and collection paths', async () => {
     const navigated = [];
     const cart = { shop_id: 'store.myshopify.com', currency: 'USD', lines: [] };

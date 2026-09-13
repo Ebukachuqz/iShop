@@ -383,7 +383,8 @@
           current_product_id: this.currentProductId,
         });
         this.setState("interpreting");
-      } catch (_) {
+      } catch (error) {
+        console.error('[Drake] Store context request failed:', error);
         this.setState("failed", { error: "I couldn’t read the store right now. Please try again." });
       }
     }
