@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from ishop.config import RuntimeSettings, load_local_environment
 from ishop.commerce.catalog import EvidenceSnapshot, ProductEvidence, VariantEvidence
 from ishop.domain.models import CartSnapshot, Money
+from ishop.domain.session_store import SessionStore
 from ishop.llm.groq import GroqLlmProvider
 from ishop.orchestration.controller import ShoppingController
 from ishop.speech.sahara_stream import SaharaStreamingSession
@@ -26,6 +27,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     llm_provider = GroqLlmProvider(api_key=active.groq_api_key)
     tts_provider = SaharaTtsProvider(api_key=active.sahara_api_key)
     controllers: dict[str, ShoppingController] = {}
+    session_store = SessionStore(active.state_db_path)
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
         ready, readiness_reason = llm_provider.check_readiness()
@@ -47,6 +49,9 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             grant.anonymous_session_id,
             ShoppingController(llm_provider=llm_provider),
         )
+        saved_state = session_store.load(grant.anonymous_session_id)
+        if saved_state is not None:
+            controller.restore_session_state(saved_state)
         result = await controller.handle_turn(
             session_id=grant.anonymous_session_id,
             turn_id=payload["turn_id"],
@@ -57,6 +62,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             current_cart=current_cart,
             current_product_id=payload.get("current_product_id"),
         )
+        session_store.save(grant.anonymous_session_id, controller.export_session_state(grant.anonymous_session_id))
         response: dict[str, Any] = {
             "turn_id": result.turn_id,
             "request_revision": result.request_revision,

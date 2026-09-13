@@ -92,6 +92,47 @@ class ControllerSessionState:
     active_search_product_ids: tuple[str, ...] = ()
     pending_clarification_intent: ShoppingIntent | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "active_turn_id": self.active_turn_id,
+            "latest_request_revision": self.latest_request_revision,
+            "latest_page_epoch": self.latest_page_epoch,
+            "is_cancelled": self.is_cancelled,
+            "cancelled_turns": sorted(self.cancelled_turns),
+            "pending_intents": [
+                {"turn_id": turn_id, "revision": revision, "intent": intent.to_dict()}
+                for (turn_id, revision), intent in self.pending_intents.items()
+            ],
+            "conversation_history": list(self.conversation_history),
+            "active_search_query": self.active_search_query,
+            "active_search_product_ids": list(self.active_search_product_ids),
+            "pending_clarification_intent": (
+                self.pending_clarification_intent.to_dict()
+                if self.pending_clarification_intent else None
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ControllerSessionState":
+        pending = {}
+        for item in data.get("pending_intents", []):
+            pending[(str(item["turn_id"]), int(item["revision"]))] = ShoppingIntent.from_dict(item["intent"])
+        pending_raw = data.get("pending_clarification_intent")
+        return cls(
+            session_id=str(data["session_id"]),
+            active_turn_id=data.get("active_turn_id"),
+            latest_request_revision=int(data.get("latest_request_revision", 0)),
+            latest_page_epoch=int(data.get("latest_page_epoch", 0)),
+            is_cancelled=bool(data.get("is_cancelled", False)),
+            cancelled_turns={str(value) for value in data.get("cancelled_turns", [])},
+            pending_intents=pending,
+            conversation_history=list(data.get("conversation_history", [])),
+            active_search_query=data.get("active_search_query"),
+            active_search_product_ids=tuple(str(value) for value in data.get("active_search_product_ids", [])),
+            pending_clarification_intent=(ShoppingIntent.from_dict(pending_raw) if pending_raw else None),
+        )
+
 
 @dataclass(frozen=True)
 class ControllerTurnResult:
@@ -134,6 +175,13 @@ class ShoppingController:
         if session_id not in self._sessions:
             self._sessions[session_id] = ControllerSessionState(session_id=session_id)
         return self._sessions[session_id]
+
+    def export_session_state(self, session_id: str) -> dict[str, Any]:
+        return self.get_session_state(session_id).to_dict()
+
+    def restore_session_state(self, data: dict[str, Any]) -> None:
+        restored = ControllerSessionState.from_dict(data)
+        self._sessions[restored.session_id] = restored
 
     def cancel_turn(self, session_id: str, turn_id: str) -> None:
         """Cancel an in-flight or pending turn (R2, S-09)."""
@@ -436,7 +484,7 @@ class ShoppingController:
             )
             if (
                 result.status == "clarification_needed"
-                and set(result.clarification_fields) & {"product_query", "product_selection"}
+                and result.clarification_fields
             ):
                 sess.pending_clarification_intent = intent
             elif result.status != "evidence_required":

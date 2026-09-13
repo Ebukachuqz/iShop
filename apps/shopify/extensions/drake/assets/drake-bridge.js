@@ -173,8 +173,7 @@ export class StorefrontBridge {
   }
 
   async _dispatchStandardActions(command) {
-    const params = command.parameters;
-    return await this.actions.updateCart(params);
+    return await this.actions.updateCart(command);
   }
 
   async _dispatchAjax(command) {

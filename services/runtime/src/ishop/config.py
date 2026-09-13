@@ -17,6 +17,7 @@ class RuntimeSettings:
     record_audio: bool
     control_secret: str | None = None
     groq_api_key: str | None = None
+    state_db_path: str = ".ishop/runtime-state.sqlite3"
 
     @classmethod
     def from_environment(cls) -> "RuntimeSettings":
@@ -55,6 +56,7 @@ class RuntimeSettings:
             record_audio,
             control_secret,
             os.getenv("GROQ_API_KEY", "").strip() or None,
+            os.getenv("ISHOP_STATE_DB", ".ishop/runtime-state.sqlite3").strip() or ".ishop/runtime-state.sqlite3",
         )
 
 
