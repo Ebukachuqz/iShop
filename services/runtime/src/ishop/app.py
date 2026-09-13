@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from ishop.domain.models import CartSnapshot, Money
 from ishop.llm.groq import GroqLlmProvider
 from ishop.orchestration.controller import ShoppingController
 from ishop.speech.sahara_stream import SaharaStreamingSession
+from ishop.tts.sahara import SaharaTtsProvider
 from ishop.transport.websocket import create_voice_app
 
 
@@ -21,6 +23,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         return SaharaStreamingSession(api_key=active.sahara_api_key, **kwargs)
 
     llm_provider = GroqLlmProvider(api_key=active.groq_api_key)
+    tts_provider = SaharaTtsProvider(api_key=active.sahara_api_key)
     controllers: dict[str, ShoppingController] = {}
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
@@ -59,6 +62,24 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             "clarification_options": list(result.clarification_options),
             "clarification_fields": list(result.clarification_fields),
         }
+        if result.spoken_response:
+            try:
+                tts_session = await tts_provider.synthesize(
+                    result.spoken_response,
+                    generation=payload["request_revision"],
+                )
+                audio_chunks = []
+                async for chunk in tts_session.chunks():
+                    audio_chunks.append({
+                        "audio_base64": base64.b64encode(chunk.audio).decode("ascii"),
+                        "generation": chunk.generation,
+                        "sample_rate": chunk.sample_rate,
+                        "channels": chunk.channels,
+                        "format": chunk.format,
+                    })
+                response["tts_audio_chunks"] = audio_chunks
+            except Exception:
+                response["tts_audio_chunks"] = []
         if result.authorized_command is not None:
             command = result.authorized_command
             response["authorized_command"] = {
