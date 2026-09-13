@@ -14,6 +14,15 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
     assert.equal(cart.shop_id, 'trusted-shop.myshopify.com');
   });
 
+  test('does not select native WebMCP writes without a validated schema translator', () => {
+    const bridge = new StorefrontBridge({
+      webMcpAdapter: new WebMcpAdapter({ getTools: async () => [], executeTool: async () => ({}) }),
+      actionsAdapter: { isAvailable: () => false },
+      ajaxAdapter: {},
+    });
+    assert.equal(bridge.detectPreferredTransport(), 'ajax_cart');
+  });
+
   test('browser cart fingerprints match the Python cart-v1 contract', async () => {
     assert.equal(
       await cartFingerprint({ shop_id: 'store.myshopify.com', currency: 'USD', lines: [] }),

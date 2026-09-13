@@ -24,7 +24,9 @@ export class StorefrontBridge {
   }
 
   detectPreferredTransport() {
-    if (this.webMcp.isAvailable()) {
+    if (this.webMcp.isAvailable() && (
+      typeof this.webMcp.isWriteAvailable !== 'function' || this.webMcp.isWriteAvailable()
+    )) {
       return 'native_webmcp';
     }
     if (this.actions.isAvailable()) {

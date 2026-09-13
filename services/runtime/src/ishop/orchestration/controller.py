@@ -710,8 +710,10 @@ class ShoppingController:
             else:
                 positive_opts[k] = v
 
+        exact_product_id = intent.product_query if intent.product_query in evidence.products else None
         target = IntentTarget(
-            title_query=intent.product_query,
+            product_id=exact_product_id,
+            title_query=None if exact_product_id else intent.product_query,
             selected_options=positive_opts,
             excluded_options=excluded_opts,
             quantity=max(1, qty),

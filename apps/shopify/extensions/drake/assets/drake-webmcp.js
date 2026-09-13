@@ -17,6 +17,12 @@ export class WebMcpAdapter {
     );
   }
 
+  isWriteAvailable() {
+    // The repository does not yet contain a captured update_cart input schema
+    // or a validated translator from internal commands to that schema.
+    return false;
+  }
+
   async getDeclaredTools() {
     if (!this.isAvailable()) {
       return [];

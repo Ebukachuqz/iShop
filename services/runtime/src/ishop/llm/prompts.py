@@ -38,6 +38,8 @@ BUDGET CONSTRAINTS (T-06):
 - Represent the relationship explicitly with comparison: max, min, range, approximate or exact. Under/below/at most uses max; over/above/at least uses min; around/about uses approximate; never silently turn one into another.
 - Include scope: "per_item" for each-item limits, "total" for the requested quantity total, or "unknown" when ambiguous. Never silently choose a scope for an ambiguous multi-item request.
 - "Show me shirts under 5000 naira" -> budget_constraint: {"max_amount": "5000", "min_amount": null, "comparison": "max", "currency": "NGN"}.
+- A follow-up asking for the cheapest or lowest-priced prior result is a search refinement. Keep the prior product subject in product_query; do not put ranking words in the product name.
+- "Around/about 700" is an approximate ranking target, not a maximum. Preserve comparison: "approximate" and retain the prior product subject on a follow-up.
 
 EXPLICIT CHECKOUT (T-20, T-21):
 - Only "proceed to checkout", "take me to checkout", or "ready to pay" sets is_explicit_checkout_request: true, operation: "request_checkout".

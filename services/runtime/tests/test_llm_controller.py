@@ -281,6 +281,17 @@ def test_cheapest_is_a_ranking_preference_not_a_product_name(store_evidence):
     assert result.spoken_response.index("Embroidered Cap") < result.spoken_response.index("Cotton T-Shirt")
 
 
+def test_current_product_id_resolves_implicit_product_page_add(store_evidence, empty_cart):
+    controller = ShoppingController(FakeLlmProvider())
+    result = asyncio.run(controller.handle_turn(
+        session_id="s", turn_id="t", request_revision=1, page_epoch=1,
+        transcript="Add it to my cart", evidence=store_evidence,
+        current_cart=empty_cart, current_product_id="prod_cap",
+    ))
+    assert result.authorized_command is not None
+    assert result.authorized_command.parameters["variant_id"] == "var_cap"
+
+
 def test_t03_variant_ambiguity_triggers_clarification_no_silent_substitution(store_evidence, empty_cart):
     """T-03, S-04: Missing size option requires clarification; no silent substitution."""
     fake_llm = FakeLlmProvider()

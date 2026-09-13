@@ -59,6 +59,20 @@
     return node;
   }
 
+  function shopperError(detail) {
+    const message = String(detail || "");
+    if (/changed before dispatch|refresh required|S-09/i.test(message)) {
+      return "Your cart changed before I could update it, so I made no new change. Please try again.";
+    }
+    if (/authoritative cart read-back|could not be verified/i.test(message)) {
+      return "I couldn't verify the final cart. Please review it before trying again.";
+    }
+    if (/uncertain|connection severed|dispatch failed/i.test(message)) {
+      return "I lost confirmation from the store. Please review your cart before trying again.";
+    }
+    return message || "I couldn't complete that cart update.";
+  }
+
   class DrakeWidget {
     constructor(root, voice) {
       this.root = root;
@@ -280,7 +294,7 @@
           this.setState("completed", { verifiedReceipt: receipt });
           this.addMessage("assistant", "Your cart is updated and verified.");
         } else {
-          const detail = receipt?.errors?.[0] || "The cart result could not be verified. Review the cart before trying again.";
+          const detail = shopperError(receipt?.errors?.[0]);
           this.setState("failed", { error: detail });
         }
         this.pendingTurn = null;
@@ -322,7 +336,7 @@
         const choose = element("button", "drake-card__choose", `Choose ${index + 1}`);
         choose.type = "button";
         choose.addEventListener("click", () => {
-          this.textInput.value = `the ${index + 1} one`;
+          this.textInput.value = product.title;
           this.textInput.focus();
         });
         card.append(choose);
@@ -408,7 +422,7 @@
         } else if (result.outcome === "human_handoff" || result.outcome === "navigation_handoff") {
           this.setState("completed", { verifiedReceipt: result });
         } else {
-          this.setState("failed", { error: result.errors?.[0] || "The cart did not reach the requested state." });
+          this.setState("failed", { error: shopperError(result.errors?.[0]) });
         }
       } catch (_) {
         this.setState("failed", { error: "I couldn’t verify the cart update." });
@@ -421,7 +435,7 @@
     }
   }
 
-  window.IShopDrakeWidget = { CandidateSet, DrakeWidget, WidgetState, STATE_LABELS };
+  window.IShopDrakeWidget = { CandidateSet, DrakeWidget, WidgetState, STATE_LABELS, shopperError };
   const root = document.getElementById("ishop-drake-root");
   if (root && window.IShopVoiceSession) {
     const widget = new DrakeWidget(root, window.IShopVoiceSession);

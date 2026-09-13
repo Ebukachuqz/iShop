@@ -123,6 +123,14 @@ test('candidate references remain stable and reject unknown ordinals', () => {
   assert.throws(() => candidates.resolve(3), /candidate_index_unavailable/);
 });
 
+test('cart failures are translated into shopper-facing language', () => {
+  const { shopperError } = loadWidgetState();
+  const stale = shopperError('Cart changed before dispatch; refresh required (S-09)');
+  assert.equal(stale, 'Your cart changed before I could update it, so I made no new change. Please try again.');
+  assert.doesNotMatch(stale, /dispatch|S-09/i);
+  assert.doesNotMatch(shopperError('Dispatch failed with potential write uncertainty'), /dispatch/i);
+});
+
 test('widget renders untrusted shopper and store text without HTML insertion', () => {
   assert.equal(widgetSource.includes('.innerHTML'), false);
   assert.equal(widgetSource.includes('.insertAdjacentHTML'), false);
