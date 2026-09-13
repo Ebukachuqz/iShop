@@ -94,6 +94,16 @@ def test_outbound_network_traffic_blocked_in_unit_tests():
         urllib.request.urlopen("https://infer.voice.intron.io/health", timeout=0.1)
 
 
+def test_outbound_network_traffic_blocked_even_with_local_proxy(monkeypatch: pytest.MonkeyPatch):
+    """Regression test ensuring outbound traffic is blocked even if HTTP_PROXY points to localhost."""
+    # Set proxy after fixture setup to verify putrequest / handler blocks it
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+    with pytest.raises(RuntimeError, match="Outbound network connection blocked"):
+        import urllib.request
+        urllib.request.urlopen("https://infer.voice.intron.io/health", timeout=0.1)
+
+
 def test_active_speech_provider_selection():
     """T-30: Registry manages active speech provider selection."""
     registry = create_default_speech_registry()
