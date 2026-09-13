@@ -49,6 +49,21 @@ test('voice widget exposes provider-neutral session and PCM utilities', () => {
   );
 });
 
+test('microphone capture emits provider-sized PCM chunks', () => {
+  const voice = loadVoice();
+  const chunks = [];
+  const capture = new voice.PcmCapture({ onChunk: (chunk) => chunks.push(chunk), chunkBytes: 1024 });
+  capture._buffer(new Uint8Array(256).buffer);
+  capture._buffer(new Uint8Array(768).buffer);
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].byteLength, 1024);
+
+  capture._buffer(new Uint8Array(256).buffer);
+  capture.stop(true);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[1].byteLength, 1024);
+});
+
 test('voice widget sends authenticated turns and suppresses duplicate finals', async () => {
   const voice = loadVoice();
   const sockets = [];

@@ -108,6 +108,8 @@
       this.stream = null;
       this.source = null;
       this.node = null;
+      this.pendingBytes = new Uint8Array(0);
+      this.chunkBytes = options.chunkBytes || 4096;
     }
 
     async start() {
@@ -124,12 +126,35 @@
       }
       this.source = this.context.createMediaStreamSource(this.stream);
       this.node = new AudioWorkletNode(this.context, "drake-pcm-processor", { numberOfInputs: 1, numberOfOutputs: 1, channelCount: this.channels });
-      this.node.port.onmessage = (event) => this.onChunk(floatToPcm16(event.data));
+      this.node.port.onmessage = (event) => this._buffer(floatToPcm16(event.data));
       this.source.connect(this.node);
       this.node.connect(this.context.destination);
     }
 
-    stop() {
+    _buffer(buffer) {
+      const incoming = new Uint8Array(buffer);
+      const combined = new Uint8Array(this.pendingBytes.byteLength + incoming.byteLength);
+      combined.set(this.pendingBytes);
+      combined.set(incoming, this.pendingBytes.byteLength);
+      let offset = 0;
+      while (combined.byteLength - offset >= this.chunkBytes) {
+        this.onChunk(combined.slice(offset, offset + this.chunkBytes).buffer);
+        offset += this.chunkBytes;
+      }
+      this.pendingBytes = combined.slice(offset);
+    }
+
+    _flush() {
+      if (!this.pendingBytes.byteLength) return;
+      const finalChunk = new Uint8Array(Math.max(1024, this.pendingBytes.byteLength));
+      finalChunk.set(this.pendingBytes);
+      this.pendingBytes = new Uint8Array(0);
+      this.onChunk(finalChunk.buffer);
+    }
+
+    stop(flush = false) {
+      if (flush) this._flush();
+      else this.pendingBytes = new Uint8Array(0);
       if (this.node) this.node.disconnect();
       if (this.source) this.source.disconnect();
       if (this.stream) this.stream.getTracks().forEach((track) => track.stop());

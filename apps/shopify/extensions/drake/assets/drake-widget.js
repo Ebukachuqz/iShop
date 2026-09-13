@@ -194,7 +194,7 @@
       }
     }
     finishListening() {
-      if (this.capture) this.capture.stop();
+      if (this.capture) this.capture.stop(true);
       this.capture = null;
       this.micButton.hidden = false;
       this.stopButton.hidden = true;

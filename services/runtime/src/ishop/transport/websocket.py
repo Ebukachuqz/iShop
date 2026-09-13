@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -224,8 +225,8 @@ def create_voice_app(
                         channels=channels,
                     )
                     try:
-                        started = await session.start()
-                    except SpeechProviderError:
+                        started = await asyncio.wait_for(session.start(), timeout=15)
+                    except (SpeechProviderError, TimeoutError):
                         await _send_error(websocket, "provider_start_failed")
                         await session.cancel()
                         session = None
@@ -249,10 +250,11 @@ def create_voice_app(
                         await _send_error(websocket, "session_not_started")
                         continue
                     try:
-                        await session.commit()
-                        async for event in session.events():
-                            await websocket.send_json(_event_payload(event))
-                    except SpeechProviderError:
+                        await asyncio.wait_for(session.commit(), timeout=10)
+                        async with asyncio.timeout(30):
+                            async for event in session.events():
+                                await websocket.send_json(_event_payload(event))
+                    except (SpeechProviderError, TimeoutError):
                         await _send_error(websocket, "provider_stream_failed")
                         await session.cancel()
                     session = None
