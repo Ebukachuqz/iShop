@@ -74,6 +74,7 @@ TRUTHFULNESS AND SAFETY INVARIANTS:
 
 def format_intent_user_prompt(
     transcript: str,
+    conversation_history: tuple[dict[str, str], ...] = (),
     catalog_context: tuple[str, ...] = (),
     cart_summary: str | None = None,
     current_product: str | None = None,
@@ -83,6 +84,12 @@ def format_intent_user_prompt(
         f"Shopper speech: \"{transcript}\"",
         f"Store currency: {currency}",
     ]
+    if conversation_history:
+        history = "\n".join(
+            f"{item.get('role', 'user')}: {str(item.get('content', ''))[:500]}"
+            for item in conversation_history[-8:]
+        )
+        parts.append(f"Recent conversation context (reference only):\n{history}")
     if current_product:
         parts.append(f"Current page product: {current_product}")
     if catalog_context:

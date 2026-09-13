@@ -54,6 +54,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             transcript=payload["transcript"],
             evidence=evidence,
             current_cart=current_cart,
+            current_product_id=payload.get("current_product_id"),
         )
         response: dict[str, Any] = {
             "turn_id": result.turn_id,

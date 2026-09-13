@@ -100,6 +100,7 @@ class GroqLlmProvider(LlmProvider):
         t_start = time.perf_counter()
         user_prompt = format_intent_user_prompt(
             transcript=request.transcript,
+            conversation_history=request.conversation_history,
             catalog_context=request.catalog_context,
             cart_summary=request.cart_summary,
             current_product=request.current_product_id,

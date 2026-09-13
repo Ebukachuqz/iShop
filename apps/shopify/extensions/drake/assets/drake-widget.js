@@ -67,12 +67,21 @@
       this.client = null;
       this.bridge = null;
       this.catalog = null;
+      this.currentProductId = null;
       this.candidates = new CandidateSet([]);
       this.capture = null;
       this.playback = voice ? new voice.AudioPlayback() : null;
       this.pendingTranscript = "";
       this.pendingTurn = null;
       this.pendingReceipts = new Map();
+      this.pageEpoch = 1;
+      try {
+        const key = `ishop:page-epoch:${root.dataset.shopDomain || location.host}`;
+        this.pageEpoch = Number(sessionStorage.getItem(key) || 0) + 1;
+        sessionStorage.setItem(key, String(this.pageEpoch));
+      } catch (_) {
+        this.pageEpoch = 1;
+      }
       this.open = false;
       this.render();
       this.bind();
@@ -154,6 +163,7 @@
       this.client = client;
       this.bridge = integrations?.bridge || null;
       this.catalog = integrations?.catalog || null;
+      this.currentProductId = integrations?.currentProductId || null;
       this.client.onEvent = (event) => this.handleVoiceEvent(event);
       this.setState("ready");
     }
@@ -335,11 +345,12 @@
       try {
         this.pendingTranscript = text;
         this.setState("checking");
+        await this.client.connect();
         const currentCart = await this.bridge.readAuthoritativeCart();
         const turn = existingTurn || {
           turnId: `turn_${crypto.randomUUID().replaceAll("-", "")}`,
           requestRevision: Math.max(1, this.client.revision + 1),
-          pageEpoch: 1,
+          pageEpoch: this.pageEpoch,
         };
         if (!existingTurn) {
           this.client.revision = turn.requestRevision;
@@ -359,6 +370,7 @@
             products: catalogEvidence?.products || [],
           },
           current_cart: currentCart,
+          current_product_id: this.currentProductId,
         });
         this.setState("interpreting");
       } catch (_) {

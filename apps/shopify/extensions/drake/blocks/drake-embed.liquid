@@ -2,6 +2,7 @@
   id="ishop-drake-root"
   data-bootstrap-url="{{ routes.root_url }}apps/ishop/bootstrap"
   data-shop-domain="{{ shop.permanent_domain | escape }}"
+  data-current-product-id="{% if product %}{{ product.id }}{% endif %}"
   data-bootstrap-script-url="{{ 'drake-bootstrap.js' | asset_url }}"
   data-widget-script-url="{{ 'drake-widget.js' | asset_url }}"
   data-bridge-script-url="{{ 'drake-bridge.js' | asset_url }}"

@@ -87,6 +87,7 @@ class ControllerSessionState:
     is_cancelled: bool = False
     cancelled_turns: set[str] = field(default_factory=set)
     pending_intents: dict[tuple[str, int], ShoppingIntent] = field(default_factory=dict)
+    conversation_history: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -236,8 +237,14 @@ class ShoppingController:
         ]
         cart_summary_str = "; ".join(cart_lines_desc) if cart_lines_desc else "Empty"
 
+        is_resume = pending_key in sess.pending_intents and evidence.query is not None
+        if not is_resume:
+            sess.conversation_history.append({"role": "user", "content": transcript.strip()})
+            sess.conversation_history = sess.conversation_history[-8:]
+
         req = LlmIntentRequest(
             transcript=transcript,
+            conversation_history=tuple(sess.conversation_history),
             catalog_context=tuple(catalog_summaries),
             cart_summary=cart_summary_str,
             current_product_id=current_product_id,

@@ -89,7 +89,7 @@
     _receive(raw) {
       let event;
       try { event = JSON.parse(raw); } catch (_) { return; }
-      const revision = Number(event.revision || this.revision);
+      const revision = Number(event.request_revision || event.revision || this.revision);
       if (revision < this.revision) return;
       if (event.type === "final_transcript") {
         if (this.finalRevisions.has(revision)) return;
