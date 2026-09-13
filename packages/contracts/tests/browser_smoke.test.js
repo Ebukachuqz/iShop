@@ -10,6 +10,7 @@ const __dirname = dirname(__filename);
 test('R8 Regression: Browser bridge and browser contracts must not depend on Node built-ins', async () => {
   const browserContractsPath = join(__dirname, '..', 'src', 'browser.js');
   const bridgePath = join(__dirname, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'src', 'bridge', 'bridge.js');
+  const deployedContractsPath = join(__dirname, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'assets', 'drake-browser-contracts.js');
 
   // 1. packages/contracts/src/browser.js must exist
   assert.strictEqual(
@@ -20,6 +21,12 @@ test('R8 Regression: Browser bridge and browser contracts must not depend on Nod
 
   // 2. browser.js must not contain any node: imports
   const browserCode = readFileSync(browserContractsPath, 'utf-8');
+  const deployedBrowserCode = readFileSync(deployedContractsPath, 'utf-8');
+  assert.strictEqual(
+    deployedBrowserCode,
+    browserCode,
+    'The deployed browser contract asset must match packages/contracts/src/browser.js exactly',
+  );
   assert.strictEqual(
     /from\s+['"]node:/.test(browserCode),
     false,

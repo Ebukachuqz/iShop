@@ -53,6 +53,8 @@
       this.voice = voice;
       this.state = new WidgetState();
       this.client = null;
+      this.bridge = null;
+      this.catalog = null;
       this.capture = null;
       this.playback = voice ? new voice.AudioPlayback() : null;
       this.open = false;
@@ -130,8 +132,10 @@
       this.stopButton.addEventListener("click", () => this.finishListening());
       this.panel.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); this.submitText(); });
     }
-    setClient(client) {
+    setClient(client, integrations) {
       this.client = client;
+      this.bridge = integrations?.bridge || null;
+      this.catalog = integrations?.catalog || null;
       this.client.onEvent = (event) => this.handleVoiceEvent(event);
       this.setState("ready");
     }
@@ -228,7 +232,7 @@
   if (root && window.IShopVoiceSession) {
     const widget = new DrakeWidget(root, window.IShopVoiceSession);
     window.IShopDrake = widget;
-    window.addEventListener("ishop:voice-configured", (event) => widget.setClient(event.detail.client));
+    window.addEventListener("ishop:voice-configured", (event) => widget.setClient(event.detail.client, event.detail));
     window.addEventListener("ishop:bootstrap-failed", () => widget.setState("failed", { error: "Drake could not connect. Please try again later." }));
   }
 })();

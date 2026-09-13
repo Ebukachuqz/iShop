@@ -14,7 +14,14 @@
       }
       return response.json();
     })
-    .then(({ grant }) => {
+    .then(async ({ grant }) => {
+      const [bridgeModule, catalogModule] = await Promise.all([
+        import(root.dataset.bridgeScriptUrl),
+        import(root.dataset.catalogScriptUrl),
+      ]);
+      const ajax = new bridgeModule.AjaxCartAdapter(null, null, root.dataset.shopDomain);
+      const bridge = new bridgeModule.StorefrontBridge({ ajaxAdapter: ajax });
+      const catalog = new catalogModule.StorefrontCatalog();
       root.dataset.bootstrapState = "ready";
       delete root.dataset.bootstrapStatus;
       window.dispatchEvent(
@@ -32,6 +39,8 @@
               ),
               grant,
             }),
+            bridge,
+            catalog,
           },
         }));
       }
