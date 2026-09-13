@@ -15,10 +15,12 @@ import { computeExpectedCart, isCartEquivalent } from './drake-browser-contracts
 export { AjaxCartAdapter, StandardActionsAdapter, WebMcpAdapter };
 
 export class StorefrontBridge {
-  constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null } = {}) {
+  constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null, navigate = null, origin = null } = {}) {
     this.ajax = ajaxAdapter || new AjaxCartAdapter();
     this.actions = actionsAdapter || new StandardActionsAdapter();
     this.webMcp = webMcpAdapter || new WebMcpAdapter();
+    this.navigate = navigate || ((url) => window.location.assign(url));
+    this.origin = origin || (typeof window !== 'undefined' ? window.location.origin : 'https://storefront.invalid');
   }
 
   detectPreferredTransport() {
@@ -44,8 +46,21 @@ export class StorefrontBridge {
   }
 
   async executeCommand(command) {
-    const transport = this.detectPreferredTransport();
     const beforeCart = await this.readAuthoritativeCart();
+
+    if (command.operation === 'handoff_to_checkout') {
+      if (!beforeCart.lines.length) {
+        return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Checkout handoff requires a non-empty cart'], before_cart: beforeCart, after_cart: beforeCart };
+      }
+      const checkoutUrl = new URL(command.parameters?.checkout_url || '/checkout', this.origin);
+      if (checkoutUrl.origin !== this.origin || checkoutUrl.pathname !== '/checkout') {
+        return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Checkout destination is not a trusted same-origin checkout path'], before_cart: beforeCart, after_cart: beforeCart };
+      }
+      this.navigate(checkoutUrl.toString());
+      return { ok: true, outcome: 'human_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };
+    }
+
+    const transport = this.detectPreferredTransport();
 
     // 1. Dispatch mutation according to preferred transport
     let mutationResult = null;

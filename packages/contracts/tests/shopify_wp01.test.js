@@ -409,5 +409,31 @@ describe('WP-01 Shopify Transport & Security Contract Suite (Simulated Mocks)', 
       assert.deepEqual(safetyErrors, []);
       assert.equal(checkoutCmd.operation.includes('pay'), false);
     });
+
+    test('bridge hands off only to the current store checkout path', async () => {
+      const navigated = [];
+      const cart = { shop_id: 'drake-test.myshopify.com', currency: 'USD', lines: [{ line_key: 'line-1', variant_id: 'v1', quantity: 1, properties: {} }] };
+      const bridge = new StorefrontBridge({
+        ajaxAdapter: { readCart: async () => cart },
+        navigate: (url) => navigated.push(url),
+        origin: 'https://drake-test.myshopify.com',
+      });
+      const result = await bridge.executeCommand({ operation: 'handoff_to_checkout', parameters: { checkout_url: '/checkout' } });
+      assert.equal(result.outcome, 'human_handoff');
+      assert.deepEqual(navigated, ['https://drake-test.myshopify.com/checkout']);
+    });
+
+    test('bridge rejects external checkout destinations', async () => {
+      const navigated = [];
+      const cart = { shop_id: 'drake-test.myshopify.com', currency: 'USD', lines: [{ line_key: 'line-1', variant_id: 'v1', quantity: 1, properties: {} }] };
+      const bridge = new StorefrontBridge({
+        ajaxAdapter: { readCart: async () => cart },
+        navigate: (url) => navigated.push(url),
+        origin: 'https://drake-test.myshopify.com',
+      });
+      const result = await bridge.executeCommand({ operation: 'handoff_to_checkout', parameters: { checkout_url: 'https://evil.example/pay' } });
+      assert.equal(result.outcome, 'rejected');
+      assert.deepEqual(navigated, []);
+    });
   });
 });

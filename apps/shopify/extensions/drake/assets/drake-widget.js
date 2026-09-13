@@ -331,6 +331,8 @@
         if (result.outcome === "verified_success" || result.outcome === "verified_no_op") {
           this.setState("completed", { verifiedReceipt: result });
           this.addMessage("assistant", "Your cart is updated and verified.");
+        } else if (result.outcome === "human_handoff") {
+          this.setState("completed", { verifiedReceipt: result });
         } else {
           this.setState("failed", { error: result.errors?.[0] || "The cart did not reach the requested state." });
         }
