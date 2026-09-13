@@ -10,15 +10,22 @@ vi.mock("./shopify.server", () => ({
   },
 }));
 
+vi.mock("./merchant-config.server", () => ({
+  getConfigurationRevision: vi.fn(),
+}));
+
 import { authenticate } from "./shopify.server";
+import { getConfigurationRevision } from "./merchant-config.server";
 
 describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
   const originalEnv = { ...process.env };
   const mockAppProxy = authenticate.public.appProxy as unknown as ReturnType<typeof vi.fn>;
+  const mockRevision = getConfigurationRevision as unknown as ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     process.env.SESSION_SIGNING_SECRET = "test-signing-secret-with-at-least-32-characters";
     process.env.DEV_ALLOWED_ORIGINS = "https://example-shop.myshopify.com,https://shop.example.com";
+    mockRevision.mockResolvedValue("config-test-revision");
   });
 
   afterEach(() => {
@@ -65,6 +72,7 @@ describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
     // Verify with the real grant implementation
     expect(data.grant.shop_id).toBe("example-shop.myshopify.com");
     expect(data.grant.permitted_origin).toBe("https://example-shop.myshopify.com");
+    expect(data.grant.config_revision).toBe("config-test-revision");
     expect(signatureMatches(data.grant, process.env.SESSION_SIGNING_SECRET!)).toBe(true);
   });
 });
