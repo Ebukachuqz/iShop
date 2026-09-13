@@ -7,6 +7,12 @@ import { WebMcpAdapter } from '../../../apps/shopify/extensions/drake/src/bridge
 import { StorefrontBridge } from '../../../apps/shopify/extensions/drake/src/bridge/bridge.js';
 
 describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
+  test('binds WebMCP cart evidence to the trusted storefront shop', () => {
+    const adapter = new WebMcpAdapter(null, 'trusted-shop.myshopify.com');
+    const cart = adapter.normalizeCart({ shop_id: 'store.myshopify.com', currency: 'USD', lines: [] });
+    assert.equal(cart.shop_id, 'trusted-shop.myshopify.com');
+  });
+
   test('T-16: WebMCP, Standard Actions, and Ajax adapters produce equivalent canonical carts', () => {
     // 1. Raw Ajax API response
     const ajaxRaw = {

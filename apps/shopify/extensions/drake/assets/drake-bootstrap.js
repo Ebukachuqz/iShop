@@ -20,7 +20,13 @@
         import(root.dataset.catalogScriptUrl),
       ]);
       const ajax = new bridgeModule.AjaxCartAdapter(null, null, root.dataset.shopDomain);
-      const bridge = new bridgeModule.StorefrontBridge({ ajaxAdapter: ajax });
+      const webMcp = new bridgeModule.WebMcpAdapter(null, root.dataset.shopDomain);
+      const actions = new bridgeModule.StandardActionsAdapter(null, root.dataset.shopDomain);
+      const bridge = new bridgeModule.StorefrontBridge({
+        ajaxAdapter: ajax,
+        webMcpAdapter: webMcp,
+        actionsAdapter: actions,
+      });
       const catalog = new catalogModule.StorefrontCatalog();
       root.dataset.bootstrapState = "ready";
       delete root.dataset.bootstrapStatus;

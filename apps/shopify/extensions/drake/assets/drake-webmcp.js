@@ -4,8 +4,9 @@
  */
 
 export class WebMcpAdapter {
-  constructor(modelContext = null) {
+  constructor(modelContext = null, shopId = null) {
     this.modelContext = modelContext || (typeof document !== 'undefined' ? document.modelContext : null);
+    this.shopId = shopId;
   }
 
   isAvailable() {
@@ -94,7 +95,7 @@ export class WebMcpAdapter {
     });
 
     return {
-      shop_id: data?.shop_id || 'store.myshopify.com',
+      shop_id: this.shopId || data?.shop_id || 'unknown.myshopify.com',
       currency: data?.currency || 'USD',
       lines: lines,
     };

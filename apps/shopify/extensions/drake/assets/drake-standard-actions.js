@@ -4,8 +4,9 @@
  */
 
 export class StandardActionsAdapter {
-  constructor(actionsApi = null) {
+  constructor(actionsApi = null, shopId = null) {
     this.actionsApi = actionsApi || (typeof window !== 'undefined' ? window.Shopify?.actions : null);
+    this.shopId = shopId;
   }
 
   isAvailable() {
@@ -65,7 +66,7 @@ export class StandardActionsAdapter {
     });
 
     return {
-      shop_id: cartData?.shop_id || 'store.myshopify.com',
+      shop_id: this.shopId || cartData?.shop_id || 'unknown.myshopify.com',
       currency: cartData?.cost?.totalAmount?.currencyCode || cartData?.currency || 'USD',
       lines: lines,
     };
