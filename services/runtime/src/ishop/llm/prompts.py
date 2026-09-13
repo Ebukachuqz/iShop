@@ -26,6 +26,7 @@ QUANTITY SEMANTICS (T-05):
 - "Add two shirts" / "Give me two more" -> quantity_change: {"mode": "increment", "value": 2}
 - "Make it two" / "Change quantity to two" -> quantity_change: {"mode": "set", "value": 2}
 - "Remove the shirt" / "Delete that item" -> quantity_change: {"mode": "set", "value": 0}, operation: "remove_from_cart"
+- "Open the snowboard" / "Take me to the product page" -> operation: "navigate". Use "search" for requests that only ask to find or show options.
 
 NEGATION AND SELF-CORRECTION (T-06):
 - Negation: "I want a shirt, not blue" -> selected_variant_attributes must NOT include blue. If only one color is available and it is blue, set unresolved_fields: ["selected_variant_attributes"].
