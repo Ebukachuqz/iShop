@@ -14,7 +14,7 @@
       }
       return response.json();
     })
-    .then(({ grant }) => {
+  .then(({ grant }) => {
       root.dataset.bootstrapState = "ready";
       delete root.dataset.bootstrapStatus;
       window.dispatchEvent(
@@ -22,6 +22,16 @@
           detail: { grant, shopDomain: root.dataset.shopDomain },
         }),
       );
+      if (root.dataset.voiceWsUrl && window.IShopVoiceSession) {
+        window.dispatchEvent(new CustomEvent("ishop:voice-configured", {
+          detail: {
+            client: new window.IShopVoiceSession.VoiceSessionClient({
+              url: root.dataset.voiceWsUrl,
+              grant,
+            }),
+          },
+        }));
+      }
     })
     .catch(() => {
       root.dataset.bootstrapState ||= "failed";
