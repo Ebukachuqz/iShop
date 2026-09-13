@@ -325,6 +325,89 @@ def test_provider_start_failure_is_truthful_and_non_authorizing():
     }
 
 
+def shopping_turn_payload(**changes):
+    payload = {
+        "type": "shopping_turn",
+        "turn_id": "turn_1",
+        "request_revision": 1,
+        "page_epoch": 1,
+        "transcript": "find a black shirt",
+        "evidence": {
+            "snapshot_id": "snapshot_1",
+            "shop_id": SHOP,
+            "currency": "NGN",
+            "observed_at_ms": 1,
+            "products": [],
+        },
+        "current_cart": {"shop_id": SHOP, "currency": "NGN", "lines": []},
+    }
+    payload.update(changes)
+    return payload
+
+
+def test_shopping_turn_handler_is_tenant_bound_and_command_result_is_bound():
+    async def handler(payload, grant):
+        assert payload["transcript"] == "find a black shirt"
+        assert grant.shop_id == SHOP
+        return {
+            "status": "completed",
+            "spoken_response": "I found an option.",
+            "authorized_command": {"command_id": "cmd_1234567890123456"},
+        }
+
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        session_factory=lambda **kwargs: FakeRealtimeSession(**kwargs),
+        shopping_turn_handler=handler,
+    )
+    with TestClient(app).websocket_connect(
+        f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+    ) as socket:
+        socket.send_json({"type": "authenticate", "grant": signed_grant()})
+        assert socket.receive_json()["type"] == "authenticated"
+        socket.send_json(shopping_turn_payload())
+        result = socket.receive_json()
+        assert result["type"] == "shopping_result"
+        assert result["authorized_command"]["command_id"] == "cmd_1234567890123456"
+        socket.send_json({
+            "type": "command_result",
+            "command_id": "cmd_1234567890123456",
+            "result": {"outcome": "verified_success"},
+        })
+        assert socket.receive_json() == {
+            "type": "command_result_ack",
+            "command_id": "cmd_1234567890123456",
+            "verified": True,
+            "request_revision": 1,
+        }
+
+
+def test_shopping_turn_rejects_cross_tenant_evidence_before_handler():
+    called = []
+
+    async def handler(payload, grant):
+        called.append(True)
+        return {"status": "completed"}
+
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        session_factory=lambda **kwargs: FakeRealtimeSession(**kwargs),
+        shopping_turn_handler=handler,
+    )
+    with TestClient(app).websocket_connect(
+        f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+    ) as socket:
+        socket.send_json({"type": "authenticate", "grant": signed_grant()})
+        socket.receive_json()
+        payload = shopping_turn_payload()
+        payload["evidence"]["shop_id"] = "other.myshopify.com"
+        socket.send_json(payload)
+        assert socket.receive_json()["error_code"] == "invalid_shopping_turn"
+    assert called == []
+
+
 def test_development_origin_parser_rejects_wildcard():
     assert development_allowed_origins("https://one.example, https://two.example/") == {
         "https://one.example",

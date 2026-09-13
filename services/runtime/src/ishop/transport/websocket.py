@@ -20,6 +20,7 @@ from ishop.speech.realtime import RealtimeSpeechSession, SpeechEventKind, Speech
 from ishop.speech.sahara_stream import SaharaStreamingSession
 
 SessionFactory = Callable[..., RealtimeSpeechSession]
+ShoppingTurnHandler = Callable[[dict[str, Any], SessionGrant], Any]
 
 
 class RevocationRequest(BaseModel):
@@ -94,6 +95,7 @@ def create_voice_app(
     allowed_tts_profiles: set[str] | None = None,
     control_secret: str | None = None,
     revocations: SessionRevocationRegistry | None = None,
+    shopping_turn_handler: ShoppingTurnHandler | None = None,
     clock_ms: Callable[[], int] | None = None,
 ) -> FastAPI:
     """Create the minimal authenticated voice transport used by WP-02."""
@@ -144,6 +146,7 @@ def create_voice_app(
         session: RealtimeSpeechSession | None = None
         revision: int | None = None
         grant: SessionGrant | None = None
+        pending_commands: dict[str, dict[str, Any]] = {}
         try:
             first = await websocket.receive_json()
             try:
@@ -258,6 +261,41 @@ def create_voice_app(
                         await session.cancel()
                         session = None
                     await websocket.send_json({"type": "turn_canceled", "revision": revision})
+                elif action == "shopping_turn":
+                    if shopping_turn_handler is None:
+                        await _send_error(websocket, "shopping_runtime_unavailable")
+                        continue
+                    try:
+                        _validate_shopping_turn(payload, grant)
+                        result = await shopping_turn_handler(payload, grant)
+                        if not isinstance(result, dict):
+                            raise ValueError("Shopping handler must return an object")
+                        command = result.get("authorized_command")
+                        if command is not None:
+                            if not isinstance(command, dict) or not command.get("command_id"):
+                                raise ValueError("Authorized command is malformed")
+                            pending_commands[str(command["command_id"])] = {
+                                "turn_id": payload["turn_id"],
+                                "request_revision": payload["request_revision"],
+                            }
+                        await websocket.send_json({"type": "shopping_result", **result})
+                    except (TypeError, ValueError):
+                        await _send_error(websocket, "invalid_shopping_turn")
+                elif action == "command_result":
+                    command_id = payload.get("command_id")
+                    result = payload.get("result")
+                    pending = pending_commands.pop(str(command_id), None)
+                    if not pending or not isinstance(result, dict):
+                        await _send_error(websocket, "unexpected_command_result")
+                        continue
+                    outcome = str(result.get("outcome", ""))
+                    verified = outcome in {"verified_success", "verified_no_op"}
+                    await websocket.send_json({
+                        "type": "command_result_ack",
+                        "command_id": command_id,
+                        "verified": verified,
+                        "request_revision": pending["request_revision"],
+                    })
                 else:
                     await _send_error(websocket, "unknown_message_type")
         except (WebSocketDisconnect, ValueError, TypeError):
@@ -321,6 +359,27 @@ def _authenticate(
 
 def _make_sahara_session(**kwargs: Any) -> RealtimeSpeechSession:
     return SaharaStreamingSession(**kwargs)
+
+
+def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> None:
+    required = {"type", "turn_id", "request_revision", "page_epoch", "transcript", "evidence", "current_cart"}
+    if set(payload) != required:
+        raise ValueError("Invalid shopping turn fields")
+    if payload["type"] != "shopping_turn":
+        raise ValueError("Invalid shopping turn type")
+    if not isinstance(payload["turn_id"], str) or not payload["turn_id"]:
+        raise ValueError("Invalid turn ID")
+    if not isinstance(payload["request_revision"], int) or payload["request_revision"] < 1:
+        raise ValueError("Invalid request revision")
+    if not isinstance(payload["page_epoch"], int) or payload["page_epoch"] < 1:
+        raise ValueError("Invalid page epoch")
+    if not isinstance(payload["transcript"], str) or not payload["transcript"].strip() or len(payload["transcript"]) > 4000:
+        raise ValueError("Invalid transcript")
+    for field_name in ("evidence", "current_cart"):
+        if not isinstance(payload[field_name], dict):
+            raise ValueError(f"Invalid {field_name}")
+        if payload[field_name].get("shop_id") != grant.shop_id:
+            raise ValueError(f"{field_name} shop mismatch")
 
 
 def _event_payload(event: SpeechStreamEvent) -> dict[str, Any]:

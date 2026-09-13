@@ -60,6 +60,16 @@
       this._send({ type: "finish_turn" });
     }
 
+    sendShoppingTurn(payload) {
+      if (!payload || typeof payload !== "object") throw new TypeError("shopping_turn_payload");
+      this._send({ type: "shopping_turn", ...payload });
+    }
+
+    sendCommandResult(commandId, result) {
+      if (!commandId || !result || typeof result !== "object") throw new TypeError("command_result_payload");
+      this._send({ type: "command_result", command_id: commandId, result });
+    }
+
     cancelTurn() {
       if (this.socket && this.socket.readyState === 1) this._send({ type: "cancel_turn" });
       this.onEvent({ type: "turn_canceled", revision: this.revision });

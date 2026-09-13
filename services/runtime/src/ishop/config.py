@@ -16,6 +16,7 @@ class RuntimeSettings:
     sahara_api_key: str
     record_audio: bool
     control_secret: str | None = None
+    groq_api_key: str | None = None
 
     @classmethod
     def from_environment(cls) -> "RuntimeSettings":
@@ -53,6 +54,7 @@ class RuntimeSettings:
             sahara_api_key,
             record_audio,
             control_secret,
+            os.getenv("GROQ_API_KEY", "").strip() or None,
         )
 
 

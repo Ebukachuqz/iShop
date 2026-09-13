@@ -195,14 +195,13 @@
       this.stopButton.hidden = true;
       this.setState("ready");
     }
-    submitText() {
+    async submitText() {
       const text = this.textInput.value.trim();
       if (!text) return;
       this.textInput.value = "";
       this.addMessage("shopper", text);
       this.state.acceptFinal(text);
-      this.setState("interpreting");
-      window.dispatchEvent(new CustomEvent("ishop:shopper-text", { detail: { text } }));
+      await this.submitShoppingRequest(text);
     }
     handleVoiceEvent(event) {
       if (event.type === "partial_transcript") {
@@ -212,12 +211,73 @@
         this.state.acceptFinal(event.text);
         this.caption.textContent = "";
         this.addMessage("shopper", event.text || "");
-        this.setState("interpreting");
-        window.dispatchEvent(new CustomEvent("ishop:shopper-transcript", { detail: event }));
+        this.submitShoppingRequest(event.text || "");
       } else if (event.type === "error") {
         this.setState("failed", { error: "I couldn’t process that. Please try again or type your request." });
+      } else if (event.type === "shopping_result") {
+        if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
+        if (event.status === "clarification_needed") {
+          this.setState("clarifying");
+        } else if (event.authorized_command) {
+          this.executeAuthorizedCommand(event.authorized_command);
+        } else if (event.status === "rejected" || event.status === "error") {
+          this.setState("failed", { error: event.spoken_response || "I couldn’t complete that request." });
+        }
       } else if (event.type === "closed") {
         this.setState("reconnecting");
+      }
+    }
+
+    async submitShoppingRequest(text) {
+      if (!this.client || !this.bridge || !this.catalog) {
+        this.setState("failed", { error: "Drake is not connected to this store yet. You can try again shortly." });
+        return;
+      }
+      try {
+        this.setState("checking");
+        const [catalogResult, currentCart] = await Promise.all([
+          this.catalog.search(text, 8),
+          this.bridge.readAuthoritativeCart(),
+        ]);
+        const requestRevision = Math.max(1, this.client.revision + 1);
+        this.client.revision = requestRevision;
+        this.client.sendShoppingTurn({
+          turn_id: `turn_${crypto.randomUUID().replaceAll("-", "")}`,
+          request_revision: requestRevision,
+          page_epoch: 1,
+          transcript: text,
+          evidence: {
+            snapshot_id: `browser_${Date.now()}`,
+            shop_id: currentCart.shop_id,
+            currency: currentCart.currency,
+            observed_at_ms: Date.now(),
+            products: catalogResult.products,
+          },
+          current_cart: currentCart,
+        });
+        this.setState("interpreting");
+      } catch (_) {
+        this.setState("failed", { error: "I couldn’t read the store right now. Please try again." });
+      }
+    }
+
+    async executeAuthorizedCommand(command) {
+      if (!command || !this.bridge || !this.client) {
+        this.setState("failed", { error: "The requested cart action is unavailable." });
+        return;
+      }
+      this.setState("updating");
+      try {
+        const result = await this.bridge.executeCommand(command);
+        this.client.sendCommandResult(command.command_id, result);
+        if (result.outcome === "verified_success" || result.outcome === "verified_no_op") {
+          this.setState("completed", { verifiedReceipt: result });
+          this.addMessage("assistant", "Your cart is updated and verified.");
+        } else {
+          this.setState("failed", { error: result.errors?.[0] || "The cart did not reach the requested state." });
+        }
+      } catch (_) {
+        this.setState("failed", { error: "I couldn’t verify the cart update." });
       }
     }
     addMessage(role, text) {
