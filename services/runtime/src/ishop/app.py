@@ -11,6 +11,7 @@ from ishop.config import RuntimeSettings, load_local_environment
 from ishop.commerce.catalog import EvidenceSnapshot, ProductEvidence, VariantEvidence
 from ishop.domain.models import CartSnapshot, Money
 from ishop.domain.session_store import SessionStore
+from ishop.domain.journal import CommandJournal
 from ishop.llm.groq import GroqLlmProvider
 from ishop.orchestration.controller import ShoppingController
 from ishop.speech.sahara_stream import SaharaStreamingSession
@@ -28,6 +29,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     tts_provider = SaharaTtsProvider(api_key=active.sahara_api_key)
     controllers: dict[str, ShoppingController] = {}
     session_store = SessionStore(active.state_db_path)
+    command_journal = CommandJournal(active.state_db_path)
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
         ready, readiness_reason = llm_provider.check_readiness()
@@ -121,6 +123,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         allowed_tts_profiles={"sahara-tts-female-pcm"},
         control_secret=active.control_secret,
         shopping_turn_handler=handle_shopping_turn,
+        command_journal=command_journal,
     )
 
     @app.get("/health")

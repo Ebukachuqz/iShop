@@ -16,7 +16,8 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, model_validator
 
-from ishop.domain.models import CartLine, CartSnapshot, SessionGrant
+from ishop.domain.models import AuthorizedCommand, CartLine, CartSnapshot, CommandOperation, SessionGrant
+from ishop.domain.journal import CommandJournal, CommandStatus
 from ishop.speech.base import SpeechProviderError
 from ishop.speech.realtime import RealtimeSpeechSession, SpeechEventKind, SpeechStreamEvent
 from ishop.speech.sahara_stream import SaharaStreamingSession
@@ -101,6 +102,7 @@ def create_voice_app(
     revocations: SessionRevocationRegistry | None = None,
     shopping_turn_handler: ShoppingTurnHandler | None = None,
     clock_ms: Callable[[], int] | None = None,
+    command_journal: CommandJournal | None = None,
 ) -> FastAPI:
     """Create the minimal authenticated voice transport used by WP-02."""
     if len(signing_secret) < 32:
@@ -127,6 +129,7 @@ def create_voice_app(
     if len(revocation_secret) < 32:
         raise ValueError("Runtime control secret must contain at least 32 characters")
     revocation_registry = revocations or SessionRevocationRegistry()
+    journal = command_journal
     now_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
     app = FastAPI()
 
@@ -289,6 +292,12 @@ def create_voice_app(
                                 "request_revision": payload["request_revision"],
                                 "command": command,
                             }
+                            if journal is not None:
+                                try:
+                                    journal.prepare_command(_authorized_command_from_dict(command))
+                                    journal.mark_dispatched(str(command["command_id"]))
+                                except Exception:
+                                    logger.exception("Failed to persist authorized command")
                         await websocket.send_json({"type": "shopping_result", **result})
                     except Exception:
                         logger.exception("Shopping turn handler failed")
@@ -296,11 +305,18 @@ def create_voice_app(
                 elif action == "command_result":
                     command_id = payload.get("command_id")
                     result = payload.get("result")
-                    pending = pending_commands.pop(str(command_id), None)
+                    pending = pending_commands.get(str(command_id))
                     if not pending or not isinstance(result, dict):
                         await _send_error(websocket, "unexpected_command_result")
                         continue
                     verified = _verify_reported_cart_result(pending["command"], result)
+                    if journal is not None:
+                        journal.complete_command(
+                            str(command_id),
+                            CommandStatus.VERIFIED_SUCCESS if verified else CommandStatus.UNCERTAIN,
+                            "Browser cart result verified" if verified else "Browser cart result could not be verified",
+                        )
+                    pending_commands.pop(str(command_id), None)
                     await websocket.send_json({
                         "type": "command_result_ack",
                         "command_id": command_id,
@@ -451,6 +467,22 @@ def _verify_reported_cart_result(command: dict[str, Any], result: dict[str, Any]
         return after.is_equivalent(expected)
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def _authorized_command_from_dict(command: dict[str, Any]) -> AuthorizedCommand:
+    return AuthorizedCommand(
+        schema_version=str(command.get("schema_version", "1.0.0")),
+        command_id=str(command["command_id"]),
+        session_id=str(command["session_id"]),
+        shop_id=str(command["shop_id"]),
+        turn_id=str(command["turn_id"]),
+        request_revision=int(command["request_revision"]),
+        page_epoch=int(command["page_epoch"]),
+        expires_at_ms=int(command.get("expires_at_ms", 0)),
+        operation=CommandOperation(str(command["operation"])),
+        parameters=dict(command.get("parameters", {})),
+        expected_cart_fingerprint=command.get("expected_cart_fingerprint"),
+    )
 
 
 def _event_payload(event: SpeechStreamEvent) -> dict[str, Any]:
