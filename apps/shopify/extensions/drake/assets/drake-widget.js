@@ -1,0 +1,234 @@
+(function () {
+  "use strict";
+
+  const VALID_STATES = new Set(["initializing", "ready", "listening", "interpreting", "checking", "clarifying", "updating", "completed", "reconnecting", "failed"]);
+  const STATE_LABELS = {
+    initializing: "Starting Drake", ready: "Ready to help", listening: "Listening",
+    interpreting: "Understanding your request", checking: "Checking the store",
+    clarifying: "I need a little more information", updating: "Updating your cart",
+    completed: "Cart update verified", reconnecting: "Reconnecting", failed: "Something went wrong",
+  };
+
+  class WidgetState {
+    constructor() {
+      this.name = "initializing";
+      this.partial = "";
+      this.final = "";
+      this.error = "";
+      this.verifiedReceipt = null;
+    }
+    transition(name, detail) {
+      if (!VALID_STATES.has(name)) throw new Error("invalid_widget_state");
+      if (name === "completed" && !detail?.verifiedReceipt) throw new Error("verified_receipt_required");
+      this.name = name;
+      this.error = name === "failed" ? String(detail?.error || "Please try again.") : "";
+      this.verifiedReceipt = detail?.verifiedReceipt || null;
+      return this.snapshot();
+    }
+    setPartial(text) {
+      this.partial = String(text || "");
+      return this.snapshot();
+    }
+    acceptFinal(text) {
+      this.final = String(text || "");
+      this.partial = "";
+      this.name = "interpreting";
+      return this.snapshot();
+    }
+    snapshot() {
+      return { name: this.name, label: STATE_LABELS[this.name], partial: this.partial, final: this.final, error: this.error, verifiedReceipt: this.verifiedReceipt };
+    }
+  }
+
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  class DrakeWidget {
+    constructor(root, voice) {
+      this.root = root;
+      this.voice = voice;
+      this.state = new WidgetState();
+      this.client = null;
+      this.capture = null;
+      this.playback = voice ? new voice.AudioPlayback() : null;
+      this.open = false;
+      this.render();
+      this.bind();
+      this.setState("initializing");
+    }
+    render() {
+      this.root.hidden = false;
+      this.root.classList.add("drake-widget");
+      this.launcher = element("button", "drake-launcher");
+      this.launcher.type = "button";
+      this.launcher.setAttribute("aria-expanded", "false");
+      this.launcher.setAttribute("aria-controls", "drake-panel");
+      this.launcher.setAttribute("aria-label", "Open Drake shopping assistant");
+      const launcherMark = element("span", "drake-launcher__mark", "D");
+      launcherMark.setAttribute("aria-hidden", "true");
+      this.launcher.append(launcherMark);
+      this.panel = element("section", "drake-panel");
+      this.panel.id = "drake-panel";
+      this.panel.hidden = true;
+      this.panel.setAttribute("role", "dialog");
+      this.panel.setAttribute("aria-modal", "false");
+      this.panel.setAttribute("aria-labelledby", "drake-title");
+      const header = element("header", "drake-header");
+      const identity = element("div", "drake-identity");
+      const title = element("h2", "drake-title", "Drake");
+      title.id = "drake-title";
+      identity.append(title, element("p", "drake-subtitle", "AI shopping assistant"));
+      this.closeButton = element("button", "drake-icon-button", "Close");
+      this.closeButton.type = "button";
+      this.closeButton.setAttribute("aria-label", "Close Drake assistant");
+      header.append(identity, this.closeButton);
+      this.status = element("div", "drake-status");
+      this.status.setAttribute("role", "status");
+      this.status.setAttribute("aria-live", "polite");
+      this.statusDot = element("span", "drake-status__dot");
+      this.statusText = element("span", "drake-status__text");
+      this.status.append(this.statusDot, this.statusText);
+      this.conversation = element("div", "drake-conversation");
+      this.conversation.setAttribute("aria-label", "Conversation with Drake");
+      this.caption = element("p", "drake-caption");
+      this.caption.setAttribute("aria-label", "Live speech caption");
+      this.error = element("p", "drake-error");
+      this.error.setAttribute("role", "alert");
+      this.error.hidden = true;
+      this.conversation.append(
+        element("p", "drake-message drake-message--assistant", "Hi, I’m Drake. Tell me what you’re shopping for, or type below."),
+        this.caption,
+        this.error,
+      );
+      const form = element("form", "drake-composer");
+      this.textInput = element("input", "drake-text-input");
+      this.textInput.type = "text";
+      this.textInput.autocomplete = "off";
+      this.textInput.placeholder = "Ask Drake to find something";
+      this.textInput.setAttribute("aria-label", "Message Drake");
+      this.sendButton = element("button", "drake-send", "Send");
+      this.sendButton.type = "submit";
+      form.append(this.textInput, this.sendButton);
+      const controls = element("div", "drake-controls");
+      this.micButton = element("button", "drake-mic", "Start speaking");
+      this.micButton.type = "button";
+      this.stopButton = element("button", "drake-stop", "Stop");
+      this.stopButton.type = "button";
+      this.stopButton.hidden = true;
+      controls.append(this.micButton, this.stopButton);
+      this.panel.append(header, this.status, this.conversation, form, controls, element("p", "drake-privacy", "Your microphone starts only when you press Start speaking."));
+      this.root.replaceChildren(this.launcher, this.panel);
+    }
+    bind() {
+      this.launcher.addEventListener("click", () => this.setOpen(!this.open));
+      this.closeButton.addEventListener("click", () => this.setOpen(false));
+      this.micButton.addEventListener("click", () => this.startListening());
+      this.stopButton.addEventListener("click", () => this.finishListening());
+      this.panel.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); this.submitText(); });
+    }
+    setClient(client) {
+      this.client = client;
+      this.client.onEvent = (event) => this.handleVoiceEvent(event);
+      this.setState("ready");
+    }
+    setOpen(open) {
+      this.open = Boolean(open);
+      this.panel.hidden = !this.open;
+      this.launcher.setAttribute("aria-expanded", String(this.open));
+      this.launcher.setAttribute("aria-label", this.open ? "Close Drake shopping assistant" : "Open Drake shopping assistant");
+      if (this.open) this.textInput.focus();
+    }
+    setState(name, detail) {
+      const view = this.state.transition(name, detail);
+      this.root.dataset.state = view.name;
+      this.statusText.textContent = view.label;
+      this.error.textContent = view.error;
+      this.error.hidden = !view.error;
+      const busy = ["listening", "interpreting", "checking", "updating", "reconnecting"].includes(view.name);
+      this.root.setAttribute("aria-busy", String(busy));
+      return view;
+    }
+    async startListening() {
+      if (!this.client || !this.voice) {
+        this.setState("failed", { error: "Voice is not connected. You can still type your request." });
+        return;
+      }
+      try {
+        if (this.playback) this.playback.interrupt();
+        await this.client.startTurn({});
+        this.capture = new this.voice.PcmCapture({ sampleRate: 16000, channels: 1, onChunk: (chunk) => this.client.sendAudio(chunk) });
+        await this.capture.start();
+        this.micButton.hidden = true;
+        this.stopButton.hidden = false;
+        this.setState("listening");
+      } catch (_) {
+        if (this.capture) this.capture.stop();
+        this.capture = null;
+        if (this.client) this.client.cancelTurn();
+        this.micButton.hidden = false;
+        this.stopButton.hidden = true;
+        this.setState("failed", { error: "Microphone access failed. Type your request instead." });
+      }
+    }
+    finishListening() {
+      if (this.capture) this.capture.stop();
+      this.capture = null;
+      this.micButton.hidden = false;
+      this.stopButton.hidden = true;
+      if (this.client) this.client.finishTurn();
+      this.setState("interpreting");
+    }
+    cancel() {
+      if (this.capture) this.capture.stop();
+      this.capture = null;
+      if (this.client) this.client.cancelTurn();
+      if (this.playback) this.playback.interrupt();
+      this.micButton.hidden = false;
+      this.stopButton.hidden = true;
+      this.setState("ready");
+    }
+    submitText() {
+      const text = this.textInput.value.trim();
+      if (!text) return;
+      this.textInput.value = "";
+      this.addMessage("shopper", text);
+      this.state.acceptFinal(text);
+      this.setState("interpreting");
+      window.dispatchEvent(new CustomEvent("ishop:shopper-text", { detail: { text } }));
+    }
+    handleVoiceEvent(event) {
+      if (event.type === "partial_transcript") {
+        this.state.setPartial(event.text);
+        this.caption.textContent = event.text || "";
+      } else if (event.type === "final_transcript") {
+        this.state.acceptFinal(event.text);
+        this.caption.textContent = "";
+        this.addMessage("shopper", event.text || "");
+        this.setState("interpreting");
+        window.dispatchEvent(new CustomEvent("ishop:shopper-transcript", { detail: event }));
+      } else if (event.type === "error") {
+        this.setState("failed", { error: "I couldn’t process that. Please try again or type your request." });
+      } else if (event.type === "closed") {
+        this.setState("reconnecting");
+      }
+    }
+    addMessage(role, text) {
+      const message = element("p", `drake-message drake-message--${role}`, text);
+      this.conversation.insertBefore(message, this.caption);
+      this.conversation.scrollTop = this.conversation.scrollHeight;
+    }
+  }
+
+  window.IShopDrakeWidget = { DrakeWidget, WidgetState, STATE_LABELS };
+  const root = document.getElementById("ishop-drake-root");
+  if (root && window.IShopVoiceSession) {
+    const widget = new DrakeWidget(root, window.IShopVoiceSession);
+    window.IShopDrake = widget;
+    window.addEventListener("ishop:voice-configured", (event) => widget.setClient(event.detail.client));
+    window.addEventListener("ishop:bootstrap-failed", () => widget.setState("failed", { error: "Drake could not connect. Please try again later." }));
+  }
+})();

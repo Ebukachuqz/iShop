@@ -7,6 +7,7 @@ import vm from 'node:vm';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const source = readFileSync(join(here, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'assets', 'drake-voice.js'), 'utf8');
+const widgetSource = readFileSync(join(here, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'assets', 'drake-widget.js'), 'utf8');
 
 function loadVoice() {
   const window = {};
@@ -18,6 +19,15 @@ function loadVoice() {
     AudioBuffer: undefined,
   });
   return window.IShopVoiceSession;
+}
+
+function loadWidgetState() {
+  const window = {};
+  vm.runInNewContext(widgetSource, {
+    window,
+    document: { getElementById: () => null },
+  });
+  return window.IShopDrakeWidget;
 }
 
 test('voice widget exposes provider-neutral session and PCM utilities', () => {
@@ -71,4 +81,27 @@ test('voice widget sends authenticated turns and suppresses duplicate finals', a
   assert.deepEqual(JSON.parse(socket.sent[3]), { type: 'finish_turn' });
   assert.equal(events.filter((event) => event.type === 'final_transcript').length, 1);
   assert.equal(events[0].authorizes_interpretation, undefined);
+});
+
+test('widget state distinguishes listening, interpretation, failure, and verified completion', () => {
+  const { WidgetState } = loadWidgetState();
+  const state = new WidgetState();
+  assert.equal(state.transition('listening').label, 'Listening');
+  state.setPartial('add medium');
+  assert.equal(state.snapshot().partial, 'add medium');
+  assert.equal(state.acceptFinal('add large').name, 'interpreting');
+  assert.equal(state.transition('failed', { error: 'Try again' }).error, 'Try again');
+  assert.throws(() => state.transition('completed'), /verified_receipt_required/);
+  assert.equal(
+    state.transition('completed', { verifiedReceipt: { command_id: 'command_1' } }).name,
+    'completed',
+  );
+});
+
+test('widget renders untrusted shopper and store text without HTML insertion', () => {
+  assert.equal(widgetSource.includes('.innerHTML'), false);
+  assert.equal(widgetSource.includes('.insertAdjacentHTML'), false);
+  assert.match(widgetSource, /node\.textContent = text/);
+  assert.match(widgetSource, /aria-live/);
+  assert.match(widgetSource, /Microphone access failed\. Type your request instead\./);
 });

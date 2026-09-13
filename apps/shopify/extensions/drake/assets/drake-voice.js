@@ -197,11 +197,22 @@
     };
     const root = document.getElementById("ishop-drake-root");
     const bootstrapUrl = root && root.dataset.bootstrapScriptUrl;
-    if (bootstrapUrl) {
+    const widgetUrl = root && root.dataset.widgetScriptUrl;
+    const loadBootstrap = () => {
+      if (!bootstrapUrl) return;
       const script = document.createElement("script");
       script.src = bootstrapUrl;
       script.defer = true;
       document.head.appendChild(script);
+    };
+    if (widgetUrl) {
+      const script = document.createElement("script");
+      script.src = widgetUrl;
+      script.onload = loadBootstrap;
+      script.defer = true;
+      document.head.appendChild(script);
+    } else {
+      loadBootstrap();
     }
   }
 })();
