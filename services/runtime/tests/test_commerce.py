@@ -124,6 +124,13 @@ def test_t02_invented_product_id_rejected(sample_evidence: EvidenceSnapshot):
     assert "Invented or nonexistent product ID" in res.reason
 
 
+def test_product_title_matching_ignores_articles_and_punctuation(sample_evidence: EvidenceSnapshot):
+    target = IntentTarget(title_query="cotton t shirt", selected_options={"color": "red", "size": "small"})
+    result = CatalogResolver.resolve(sample_evidence, target)
+    assert result.status == ResolutionStatus.RESOLVED
+    assert result.variant.variant_id == "var_red_s"
+
+
 def test_t02_wrong_currency_and_shop_rejected(sample_evidence: EvidenceSnapshot):
     target = IntentTarget(product_id="prod_shirt", selected_options={"color": "red", "size": "s"})
     # Wrong currency

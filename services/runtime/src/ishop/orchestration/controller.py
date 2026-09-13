@@ -30,6 +30,7 @@ from ishop.commerce.catalog import (
     ResolutionResult,
     ResolutionStatus,
     VariantEvidence,
+    product_title_matches,
 )
 from ishop.commerce.reconciler import (
     CommandReconciler,
@@ -103,6 +104,7 @@ class ControllerTurnResult:
     clarification_options: tuple[str, ...] = ()
     reason: str | None = None
     clarification_fields: tuple[str, ...] = ()
+    evidence_query: str | None = None
 
 
 class ShoppingController:
@@ -286,6 +288,34 @@ class ShoppingController:
 
         intent = intent_result.intent
 
+        if (
+            intent.operation
+            in {
+                IntentOperation.SEARCH,
+                IntentOperation.BROWSE,
+                IntentOperation.DESCRIBE_PRODUCT,
+                IntentOperation.CHECK_AVAILABILITY,
+                IntentOperation.ADD_TO_CART,
+                IntentOperation.UPDATE_QUANTITY,
+                IntentOperation.REMOVE_FROM_CART,
+                IntentOperation.NAVIGATE,
+            }
+            and intent.product_query
+            and not evidence.products
+            and evidence.query is None
+        ):
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status="evidence_required",
+                spoken_response="",
+                extracted_intent=intent,
+                reason="Catalog evidence must be retrieved for the structured product query",
+                evidence_query=intent.product_query,
+            )
+
         # 5. Dispatch based on extracted intent operation
         if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE):
             return self._handle_search_and_browse(
@@ -348,7 +378,7 @@ class ShoppingController:
         matching: list[ProductEvidence] = []
 
         for p in evidence.products.values():
-            if not query or query in p.title.lower():
+            if not query or product_title_matches(query, p.title):
                 # Apply budget constraint if specified (T-06)
                 if intent.budget_constraint:
                     try:

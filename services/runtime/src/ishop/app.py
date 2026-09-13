@@ -61,6 +61,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             "reason": result.reason,
             "clarification_options": list(result.clarification_options),
             "clarification_fields": list(result.clarification_fields),
+            "evidence_query": result.evidence_query,
         }
         if result.spoken_response:
             try:
@@ -169,4 +170,5 @@ def _evidence_from_browser(data: dict[str, Any]) -> EvidenceSnapshot:
         currency=str(data["currency"]),
         observed_at_ms=int(data["observed_at_ms"]),
         products=products,
+        query=str(data["query"]) if data.get("query") else None,
     )

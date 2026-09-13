@@ -70,6 +70,7 @@
       this.candidates = new CandidateSet([]);
       this.capture = null;
       this.playback = voice ? new voice.AudioPlayback() : null;
+      this.pendingTranscript = "";
       this.open = false;
       this.render();
       this.bind();
@@ -236,6 +237,10 @@
         };
         this.setState("failed", { error: messages[event.error_code] || "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
+        if (event.status === "evidence_required" && event.evidence_query) {
+          this.retrieveCatalogEvidence(event.evidence_query);
+          return;
+        }
         if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
         this.playTts(event.tts_audio_chunks);
         if (event.status === "clarification_needed") {
@@ -291,18 +296,29 @@
       });
     }
 
-    async submitShoppingRequest(text) {
+    async retrieveCatalogEvidence(query) {
+      try {
+        this.setState("checking");
+        const catalogResult = await this.catalog.search(query, 8);
+        this.renderProducts(catalogResult.products);
+        await this.submitShoppingRequest(this.pendingTranscript, {
+          query,
+          products: catalogResult.products,
+        });
+      } catch (_) {
+        this.setState("failed", { error: "I couldn’t search this store right now. Please try again." });
+      }
+    }
+
+    async submitShoppingRequest(text, catalogEvidence = null) {
       if (!this.client || !this.bridge || !this.catalog) {
         this.setState("failed", { error: "Drake is not connected to this store yet. You can try again shortly." });
         return;
       }
       try {
+        this.pendingTranscript = text;
         this.setState("checking");
-        const [catalogResult, currentCart] = await Promise.all([
-          this.catalog.search(text, 8),
-          this.bridge.readAuthoritativeCart(),
-        ]);
-        this.renderProducts(catalogResult.products);
+        const currentCart = await this.bridge.readAuthoritativeCart();
         const requestRevision = Math.max(1, this.client.revision + 1);
         this.client.revision = requestRevision;
         this.client.sendShoppingTurn({
@@ -315,7 +331,8 @@
             shop_id: currentCart.shop_id,
             currency: currentCart.currency,
             observed_at_ms: Date.now(),
-            products: catalogResult.products,
+            query: catalogEvidence?.query || null,
+            products: catalogEvidence?.products || [],
           },
           current_cart: currentCart,
         });

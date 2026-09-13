@@ -135,6 +135,32 @@ def test_t06_negation_scope_not_blue(store_evidence, empty_cart):
     assert res.extracted_intent.selected_variant_attributes.get("color") != "blue"
 
 
+def test_structured_product_query_is_requested_before_catalog_lookup(empty_cart):
+    controller = ShoppingController(llm_provider=FakeLlmProvider())
+    empty_evidence = EvidenceSnapshot(
+        snapshot_id="intent_only",
+        shop_id="drake-test.myshopify.com",
+        currency="NGN",
+        observed_at_ms=100000,
+        products={},
+    )
+
+    result = asyncio.run(
+        controller.handle_turn(
+            session_id="sess_query",
+            turn_id="turn_query",
+            request_revision=1,
+            page_epoch=1,
+            transcript="Abeg help me add the cotton t-shirt to my cart",
+            evidence=empty_evidence,
+            current_cart=empty_cart,
+        )
+    )
+
+    assert result.status == "evidence_required"
+    assert result.evidence_query == "t-shirt"
+
+
 def test_t06_self_correction_medium_wait_no_large(store_evidence, empty_cart):
     """T-06, T-04: 'Add small wait no make it medium' captures only the final intended variant."""
     fake_llm = FakeLlmProvider()

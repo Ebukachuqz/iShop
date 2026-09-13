@@ -8,6 +8,7 @@ Enforces Safety invariants:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping
@@ -60,6 +61,14 @@ class EvidenceSnapshot:
     currency: str
     observed_at_ms: int
     products: dict[str, ProductEvidence] = field(default_factory=dict)
+    query: str | None = None
+
+
+def product_title_matches(query: str, title: str) -> bool:
+    ignored = {"a", "an", "the"}
+    query_tokens = {token for token in re.findall(r"[a-z0-9]+", query.lower()) if token not in ignored}
+    title_tokens = {token for token in re.findall(r"[a-z0-9]+", title.lower()) if token not in ignored}
+    return bool(query_tokens and title_tokens and (query_tokens <= title_tokens or title_tokens <= query_tokens))
 
 
 @dataclass(frozen=True)
@@ -144,10 +153,9 @@ class CatalogResolver:
                     reason=f"Invented or nonexistent product ID '{target.product_id}' (T-02)",
                 )
         elif target.title_query:
-            query = target.title_query.strip().lower()
             matching_products = [
                 p for p in evidence.products.values()
-                if query in p.title.lower() or p.title.lower() in query
+                if product_title_matches(target.title_query, p.title)
             ]
             if not matching_products:
                 return ResolutionResult(
