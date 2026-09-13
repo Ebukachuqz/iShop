@@ -5,8 +5,12 @@ description = "FastAPI and Pipecat voice runtime for iShop (Drake)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.141.0,<0.142.0",
+    "uvicorn>=0.37.0,<0.38.0",
     "websockets>=15.0,<16.0",
 ]
+
+[project.scripts]
+ishop-runtime = "ishop.app:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

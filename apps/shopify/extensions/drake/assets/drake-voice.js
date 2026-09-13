@@ -175,8 +175,26 @@
     return pcm.buffer;
   }
 
+  function buildVoiceWebSocketUrl(baseUrl, shopDomain) {
+    const url = new URL(baseUrl);
+    if (!['ws:', 'wss:'].includes(url.protocol)) throw new Error('voice_url_protocol');
+    if (url.protocol !== 'wss:' && !['localhost', '127.0.0.1'].includes(url.hostname)) {
+      throw new Error('voice_url_requires_tls');
+    }
+    if (!url.pathname.includes('/voice/')) {
+      url.pathname = url.pathname.replace(/\/$/, '') + '/voice/' + encodeURIComponent(shopDomain);
+    }
+    return url.toString();
+  }
+
   if (typeof window !== "undefined") {
-    window.IShopVoiceSession = { VoiceSessionClient, PcmCapture, AudioPlayback, floatToPcm16 };
+    window.IShopVoiceSession = {
+      VoiceSessionClient,
+      PcmCapture,
+      AudioPlayback,
+      floatToPcm16,
+      buildVoiceWebSocketUrl,
+    };
     const root = document.getElementById("ishop-drake-root");
     const bootstrapUrl = root && root.dataset.bootstrapScriptUrl;
     if (bootstrapUrl) {

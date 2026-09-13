@@ -12,6 +12,7 @@
   "scripts": {
     "bootstrap": "node scripts/command-dispatcher.mjs bootstrap",
     "dev": "node scripts/command-dispatcher.mjs dev",
+    "dev:runtime": "python -m uv run --frozen --package ishop-runtime ishop-runtime",
     "check": "node scripts/command-dispatcher.mjs check",
     "check:ci": "node scripts/command-dispatcher.mjs check --ci",
     "check:docs": "python scripts/check-docs.py",
