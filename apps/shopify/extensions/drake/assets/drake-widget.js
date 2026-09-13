@@ -289,12 +289,16 @@
         }
       } else if (event.type === "command_result_ack") {
         const receipt = this.pendingReceipts.get(event.command_id);
+        // Late or duplicate acknowledgements must never regress a newer turn.
+        if (!receipt) return;
+        if (event.request_revision != null && receipt.request_revision != null &&
+            Number(event.request_revision) < Number(receipt.request_revision)) return;
         this.pendingReceipts.delete(event.command_id);
-        if (event.verified && receipt) {
-          this.setState("completed", { verifiedReceipt: receipt });
+        if (event.verified) {
+          this.setState("completed", { verifiedReceipt: receipt.result });
           this.addMessage("assistant", "Your cart is updated and verified.");
         } else {
-          const detail = shopperError(receipt?.errors?.[0]);
+          const detail = shopperError(receipt.result?.errors?.[0]);
           this.setState("failed", { error: detail });
         }
         this.pendingTurn = null;
@@ -415,7 +419,10 @@
       this.setState("updating");
       try {
         const result = await this.bridge.executeCommand(command);
-        this.pendingReceipts.set(command.command_id, result);
+        this.pendingReceipts.set(command.command_id, {
+          result,
+          request_revision: command.request_revision,
+        });
         this.client.sendCommandResult(command.command_id, result);
         if (result.outcome === "verified_success" || result.outcome === "verified_no_op") {
           this.setState("updating");
