@@ -25,7 +25,7 @@ from ishop.commerce.catalog import (
 )
 from ishop.commerce.reconciler import CommandReconciler, ExecutionOutcome
 from ishop.commerce.simulator import ShopifySimulator
-from ishop.domain.intent import IntentOperation, ShoppingIntent
+from ishop.domain.intent import BudgetConstraint, IntentOperation, ShoppingIntent
 from ishop.domain.journal import CommandJournal, CommandStatus
 from ishop.domain.models import CartLine, CartSnapshot, CommandOperation, Money
 from ishop.llm.base import (
@@ -253,6 +253,32 @@ def test_t06_budget_constraint_filtering(store_evidence, empty_cart):
     # Embroidered Cap is 3500 NGN, Cotton T-Shirt is 5000+ NGN
     assert "Embroidered Cap" in res.spoken_response
     assert "Cotton T-Shirt" not in res.spoken_response
+
+
+def test_approximate_price_ranks_without_inventing_a_hard_cap(store_evidence):
+    controller = ShoppingController(FakeLlmProvider())
+    intent = ShoppingIntent(
+        intent_id="int_approx", operation=IntentOperation.SEARCH,
+        product_query=None, is_explicit_checkout_request=False,
+        supporting_transcript_span="Which is closest to 4000?",
+        budget_constraint=BudgetConstraint("4000", "NGN", comparison="approximate"),
+    )
+    result = controller._handle_search_and_browse("s", "t", 1, 1, intent, store_evidence)
+    assert result.result_product_ids == ("prod_cap", "prod_tee")
+    assert "3500.00 NGN" in result.spoken_response
+    assert "5000.00 NGN" in result.spoken_response
+
+
+def test_cheapest_is_a_ranking_preference_not_a_product_name(store_evidence):
+    controller = ShoppingController(FakeLlmProvider())
+    intent = ShoppingIntent(
+        intent_id="int_cheapest", operation=IntentOperation.BROWSE,
+        product_query="cheapest", is_explicit_checkout_request=False,
+        supporting_transcript_span="Which one is the cheapest?",
+    )
+    result = controller._handle_search_and_browse("s", "t", 1, 1, intent, store_evidence)
+    assert result.result_product_ids == ("prod_cap", "prod_tee")
+    assert result.spoken_response.index("Embroidered Cap") < result.spoken_response.index("Cotton T-Shirt")
 
 
 def test_t03_variant_ambiguity_triggers_clarification_no_silent_substitution(store_evidence, empty_cart):

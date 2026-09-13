@@ -19,6 +19,15 @@ function decimalPrice(value) {
   return String(value ?? '0');
 }
 
+function normalizeProductJsonPrices(products) {
+  for (const product of products) {
+    for (const variant of product.variants || []) {
+      if (Number.isInteger(variant.price)) variant.price = (variant.price / 100).toFixed(2);
+    }
+  }
+  return products;
+}
+
 function normalizeOptions(variant, productOptions) {
   if (Array.isArray(variant.selectedOptions)) {
     return Object.fromEntries(variant.selectedOptions.map((option) => [String(option.name), String(option.value)]));
@@ -99,14 +108,8 @@ export class AjaxCatalogAdapter {
       if (!detailResponse.ok) throw new Error(`product_detail_failed_${detailResponse.status}`);
       return detailResponse.json();
     }));
+    normalizeProductJsonPrices(detailed);
     const normalized = normalizeCatalogProducts({ products: detailed }, { currency: this.currency });
-    for (const product of normalized) {
-      for (const variant of product.variants) {
-        const raw = detailed.find((candidate) => String(candidate.id) === product.product_id);
-        const rawVariant = raw?.variants?.find((candidate) => String(candidate.id) === variant.variant_id);
-        if (rawVariant && Number.isInteger(rawVariant.price)) variant.price.amount = (rawVariant.price / 100).toFixed(2);
-      }
-    }
     return normalized;
   }
 
@@ -115,6 +118,7 @@ export class AjaxCatalogAdapter {
     const response = await this.fetch(`${this.baseUrl}/products/${encodeURIComponent(handle)}.js`, { headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error(`product_detail_failed_${response.status}`);
     const raw = await response.json();
+    normalizeProductJsonPrices([raw]);
     return normalizeCatalogProducts({ products: [raw] }, { currency: this.currency })[0] || null;
   }
 }

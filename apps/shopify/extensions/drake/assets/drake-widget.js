@@ -73,6 +73,7 @@
       this.capture = null;
       this.playback = voice ? new voice.AudioPlayback() : null;
       this.pendingTranscript = "";
+      this.pendingCatalogProducts = [];
       this.pendingTurn = null;
       this.pendingReceipts = new Map();
       this.pageEpoch = 1;
@@ -255,7 +256,11 @@
           this.retrieveCatalogEvidence(event.evidence_query, event.turn_id, event.request_revision);
           return;
         }
-        if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
+        if (Array.isArray(event.result_product_ids) && event.result_product_ids.length) {
+          const byId = new Map(this.pendingCatalogProducts.map((product) => [String(product.product_id), product]));
+          this.renderProducts(event.result_product_ids.map((id) => byId.get(String(id))).filter(Boolean));
+        }
+        if (event.spoken_response && !event.authorized_command) this.addMessage("assistant", event.spoken_response);
         this.playTts(event.tts_audio_chunks);
         if (event.status === "clarification_needed") {
           this.setState("clarifying");
@@ -277,7 +282,6 @@
         } else {
           const detail = receipt?.errors?.[0] || "The cart result could not be verified. Review the cart before trying again.";
           this.setState("failed", { error: detail });
-          if (detail) this.addMessage("assistant", detail);
         }
         this.pendingTurn = null;
       } else if (event.type === "closed") {
@@ -298,8 +302,8 @@
             generation: this.playback.generation,
             format: chunk.format || "wav",
           });
-        } catch (_) {
-          this.setState("failed", { error: "Voice playback failed. The text response is still available." });
+        } catch (error) {
+          console.error('[Drake] Voice playback failed:', error);
         }
       }
     }
@@ -331,7 +335,7 @@
         if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
         this.setState("checking");
         const catalogResult = await this.catalog.search(query, 8);
-        this.renderProducts(catalogResult.products);
+        this.pendingCatalogProducts = catalogResult.products;
         await this.submitShoppingRequest(this.pendingTranscript, {
           query,
           products: catalogResult.products,

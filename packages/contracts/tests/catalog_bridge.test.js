@@ -65,6 +65,21 @@ test('catalog prefers declared WebMCP search and safely falls back for reads', a
   assert.equal(fallback.products[0].product_id, 'fallback');
 });
 
+test('Ajax product-page lookup converts Shopify minor-unit prices like search', async () => {
+  const adapter = new AjaxCatalogAdapter({
+    currency: 'USD',
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        id: 20, title: 'Snowboard', handle: 'snowboard', options: [],
+        variants: [{ id: 201, title: 'Default', price: 69995, available: true }],
+      }),
+    }),
+  });
+  const product = await adapter.getByHandle('snowboard');
+  assert.equal(product.variants[0].price.amount, '699.95');
+});
+
 test('deployed theme assets contain the cart bridge and catalog modules', () => {
   const here = fileURLToPath(new URL('.', import.meta.url));
   const extension = join(here, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake');

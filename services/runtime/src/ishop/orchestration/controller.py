@@ -19,7 +19,7 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ishop.commerce.catalog import (
@@ -88,6 +88,8 @@ class ControllerSessionState:
     cancelled_turns: set[str] = field(default_factory=set)
     pending_intents: dict[tuple[str, int], ShoppingIntent] = field(default_factory=dict)
     conversation_history: list[dict[str, str]] = field(default_factory=list)
+    active_search_query: str | None = None
+    active_search_product_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,7 @@ class ControllerTurnResult:
     reason: str | None = None
     clarification_fields: tuple[str, ...] = ()
     evidence_query: str | None = None
+    result_product_ids: tuple[str, ...] = ()
 
 
 class ShoppingController:
@@ -295,6 +298,13 @@ class ShoppingController:
                     reason=f"Aborted after async reasoning: {reason}",
                 )
 
+        lower_transcript = transcript.casefold()
+        asks_for_result_ranking = any(
+            phrase in lower_transcript for phrase in ("cheapest", "lowest", "least expensive", "closest to")
+        )
+        if asks_for_result_ranking and not intent.product_query and sess.active_search_query:
+            intent = replace(intent, product_query=sess.active_search_query)
+
         if (
             intent.operation
             in {
@@ -329,7 +339,6 @@ class ShoppingController:
         # Do not silently discard a second requested action when the provider
         # returns only the first operation. A bounded plan contract can be
         # introduced later; until then, ask before executing either side.
-        lower_transcript = transcript.casefold()
         if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE) and "add" in lower_transcript and ("search" in lower_transcript or "find" in lower_transcript):
             return ControllerTurnResult(
                 session_id=session_id,
@@ -345,9 +354,13 @@ class ShoppingController:
 
         # 5. Dispatch based on extracted intent operation
         if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE):
-            return self._handle_search_and_browse(
+            result = self._handle_search_and_browse(
                 session_id, turn_id, request_revision, page_epoch, intent, evidence
             )
+            if result.status == "completed" and result.result_product_ids:
+                sess.active_search_query = (intent.product_query or sess.active_search_query or "").strip() or None
+                sess.active_search_product_ids = result.result_product_ids
+            return result
 
         elif intent.operation == IntentOperation.DESCRIBE_PRODUCT:
             return self._handle_describe_and_compare(
@@ -431,7 +444,12 @@ class ShoppingController:
         evidence: EvidenceSnapshot,
     ) -> ControllerTurnResult:
         query = (intent.product_query or "").strip().lower()
+        ranking_text = f"{intent.supporting_transcript_span} {query}".casefold()
+        wants_cheapest = any(word in ranking_text for word in ("cheapest", "lowest", "least expensive"))
+        query = re.sub(r"\b(?:cheapest|lowest|least\s+expensive)\b", "", query).strip()
         matching: list[ProductEvidence] = []
+        eligible_prices: dict[str, tuple[Money, ...]] = {}
+        price_evidence_error = False
 
         if not query and not evidence.products:
             return ControllerTurnResult(
@@ -455,6 +473,13 @@ class ShoppingController:
                         max_amt = Money.from_string(budget.max_amount, budget.currency) if budget.max_amount is not None else None
                         min_amt = Money.from_string(budget.min_amount, budget.currency) if budget.min_amount is not None else None
                         def eligible(price: Money) -> bool:
+                            if price.currency != budget.currency:
+                                raise ValueError("Catalog price currency does not match the requested currency")
+                            if budget.comparison == "approximate":
+                                return True
+                            if budget.comparison == "exact":
+                                target = max_amt or min_amt
+                                return target is not None and price == target
                             if budget.comparison in ("min",) and min_amt is not None:
                                 return price >= min_amt
                             if max_amt is not None and price > max_amt:
@@ -462,12 +487,24 @@ class ShoppingController:
                             if min_amt is not None and price < min_amt:
                                 return False
                             return True
-                        if any(eligible(v.price) for v in p.variants):
+                        prices = tuple(v.price for v in p.variants if eligible(v.price))
+                        if prices:
                             matching.append(p)
-                    except Exception:
+                            eligible_prices[p.product_id] = prices
+                    except (ValueError, ArithmeticError):
+                        price_evidence_error = True
                         continue
                 else:
                     matching.append(p)
+                    eligible_prices[p.product_id] = tuple(v.price for v in p.variants)
+
+        if not matching and price_evidence_error:
+            return ControllerTurnResult(
+                session_id=session_id, turn_id=turn_id, request_revision=request_revision,
+                page_epoch=page_epoch, status="error",
+                spoken_response="I couldn't verify the catalog prices for that request. Please try again.",
+                extracted_intent=intent, reason="Catalog price evidence is malformed or uses a different currency",
+            )
 
         if not matching:
             resp = f"I couldn't find any products in the catalog matching '{query}'"
@@ -492,11 +529,14 @@ class ShoppingController:
             )
 
         def display_price(product: ProductEvidence) -> Money:
-            return min((v.price for v in product.variants), default=Money.from_string("0", evidence.currency))
+            prices = eligible_prices.get(product.product_id, ())
+            if not prices:
+                raise ValueError("Product has no eligible verified price")
+            return min(prices)
         if intent.budget_constraint and intent.budget_constraint.comparison in ("approximate", "exact"):
             target = Money.from_string(intent.budget_constraint.max_amount or "0", intent.budget_constraint.currency)
             matching.sort(key=lambda p: abs(display_price(p).amount - target.amount))
-        elif intent.product_query and any(word in intent.product_query for word in ("cheapest", "lowest", "least expensive")):
+        elif wants_cheapest:
             matching.sort(key=lambda p: display_price(p).amount)
         names = [f"{p.title} (from {display_price(p)})" for p in matching[:3]]
         resp = f"Found {len(matching)} items: {', '.join(names)}."
@@ -508,6 +548,7 @@ class ShoppingController:
             status="completed",
             spoken_response=resp,
             extracted_intent=intent,
+            result_product_ids=tuple(p.product_id for p in matching),
         )
 
     def _handle_describe_and_compare(
