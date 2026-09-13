@@ -416,27 +416,53 @@ class ShoppingController:
         query = (intent.product_query or "").strip().lower()
         matching: list[ProductEvidence] = []
 
+        if not query and not evidence.products:
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status="clarification_needed",
+                spoken_response="What kind of product should I look for?",
+                extracted_intent=intent,
+                clarification_fields=("product_query",),
+                reason="Catalog subject is missing and no browse evidence is available",
+            )
+
         for p in evidence.products.values():
             if not query or product_title_matches(query, p.title):
                 # Apply budget constraint if specified (T-06)
                 if intent.budget_constraint:
                     try:
-                        max_amt = Money.from_string(
-                            intent.budget_constraint.max_amount,
-                            intent.budget_constraint.currency,
-                        )
-                        # Keep product if any variant is within budget
-                        if any(v.price <= max_amt for v in p.variants):
+                        budget = intent.budget_constraint
+                        max_amt = Money.from_string(budget.max_amount, budget.currency) if budget.max_amount is not None else None
+                        min_amt = Money.from_string(budget.min_amount, budget.currency) if budget.min_amount is not None else None
+                        def eligible(price: Money) -> bool:
+                            if budget.comparison in ("min",) and min_amt is not None:
+                                return price >= min_amt
+                            if max_amt is not None and price > max_amt:
+                                return False
+                            if min_amt is not None and price < min_amt:
+                                return False
+                            return True
+                        if any(eligible(v.price) for v in p.variants):
                             matching.append(p)
                     except Exception:
-                        matching.append(p)
+                        continue
                 else:
                     matching.append(p)
 
         if not matching:
             resp = f"I couldn't find any products in the catalog matching '{query}'"
             if intent.budget_constraint:
-                resp += f" under {intent.budget_constraint.max_amount} {intent.budget_constraint.currency}"
+                budget = intent.budget_constraint
+                relation = {
+                    "min": "over",
+                    "approximate": "around",
+                    "exact": "at",
+                }.get(budget.comparison, "under")
+                amount = budget.max_amount or budget.min_amount or "the requested amount"
+                resp += f" {relation} {amount} {budget.currency}"
             resp += "."
             return ControllerTurnResult(
                 session_id=session_id,
@@ -448,7 +474,14 @@ class ShoppingController:
                 extracted_intent=intent,
             )
 
-        names = [f"{p.title} (from {p.variants[0].price})" for p in matching[:3]]
+        def display_price(product: ProductEvidence) -> Money:
+            return min((v.price for v in product.variants), default=Money.from_string("0", evidence.currency))
+        if intent.budget_constraint and intent.budget_constraint.comparison in ("approximate", "exact"):
+            target = Money.from_string(intent.budget_constraint.max_amount or "0", intent.budget_constraint.currency)
+            matching.sort(key=lambda p: abs(display_price(p).amount - target.amount))
+        elif intent.product_query and any(word in intent.product_query for word in ("cheapest", "lowest", "least expensive")):
+            matching.sort(key=lambda p: display_price(p).amount)
+        names = [f"{p.title} (from {display_price(p)})" for p in matching[:3]]
         resp = f"Found {len(matching)} items: {', '.join(names)}."
         return ControllerTurnResult(
             session_id=session_id,
@@ -727,7 +760,10 @@ class ShoppingController:
                 # Focused clarification question (T-03, S-04)
                 missing = ", ".join(resolution.missing_options)
                 opts = [f"{v.variant_title}" for v in resolution.candidate_variants[:4]]
-                spoken = f"Please select your {missing}. Options include: {', '.join(opts)}."
+                if missing:
+                    spoken = f"Please select your {missing} for {intent.product_query or 'that product'}. Options include: {', '.join(opts)}."
+                else:
+                    spoken = f"Which product would you like: {', '.join(opts)}?"
                 return ControllerTurnResult(
                     session_id=session_id,
                     turn_id=turn_id,
@@ -769,10 +805,11 @@ class ShoppingController:
                         clarification_fields=("budget_scope",),
                     )
                 try:
-                    budget_money = Money.from_string(
-                        intent.budget_constraint.max_amount,
-                        intent.budget_constraint.currency,
-                    )
+                    budget = intent.budget_constraint
+                    max_money = Money.from_string(budget.max_amount, budget.currency) if budget.max_amount is not None else None
+                    min_money = Money.from_string(budget.min_amount, budget.currency) if budget.min_amount is not None else None
+                    budget_money = max_money or min_money
+                    assert budget_money is not None
                     if variant.price.currency != budget_money.currency:
                         return ControllerTurnResult(
                             session_id=session_id,
@@ -784,26 +821,37 @@ class ShoppingController:
                             extracted_intent=intent,
                             reason=f"Budget currency mismatch: {budget_money.currency} vs {variant.price.currency}",
                         )
-                    if variant.price > budget_money:
+                    if max_money is not None and variant.price > max_money:
                         return ControllerTurnResult(
                             session_id=session_id,
                             turn_id=turn_id,
                             request_revision=request_revision,
                             page_epoch=page_epoch,
                             status="rejected",
-                            spoken_response=f"I cannot add {variant.product_title} ({variant.variant_title}) because its price of {variant.price} exceeds your budget limit of {budget_money}.",
+                            spoken_response=f"I cannot add {variant.product_title} ({variant.variant_title}) because its price of {variant.price} exceeds your budget limit of {max_money}.",
                             extracted_intent=intent,
-                            reason=f"Variant price {variant.price} exceeds budget constraint {budget_money} (T-06)",
+                            reason=f"Variant price {variant.price} exceeds budget constraint {max_money} (T-06)",
+                        )
+                    if min_money is not None and variant.price < min_money:
+                        return ControllerTurnResult(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            request_revision=request_revision,
+                            page_epoch=page_epoch,
+                            status="rejected",
+                            spoken_response=f"I cannot add that item because its price of {variant.price} is below your minimum of {min_money}.",
+                            extracted_intent=intent,
+                            reason=f"Variant price {variant.price} is below budget constraint {min_money} (T-06)",
                         )
                     total_cost = variant.price * target.quantity
-                    if intent.budget_constraint.scope == "total" and total_cost > budget_money:
+                    if max_money is not None and intent.budget_constraint.scope == "total" and total_cost > max_money:
                         return ControllerTurnResult(
                             session_id=session_id,
                             turn_id=turn_id,
                             request_revision=request_revision,
                             page_epoch=page_epoch,
                             status="rejected",
-                            spoken_response=f"Adding {target.quantity} of {variant.product_title} totals {total_cost}, which exceeds your budget limit of {budget_money}.",
+                            spoken_response=f"Adding {target.quantity} of {variant.product_title} totals {total_cost}, which exceeds your budget limit of {max_money}.",
                             extracted_intent=intent,
                             reason=f"Total cost {total_cost} exceeds budget constraint {budget_money} (T-06)",
                         )

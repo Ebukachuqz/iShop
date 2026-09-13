@@ -216,10 +216,17 @@ class FakeLlmProvider(LlmProvider):
 
         # 6. Budget constraint parsing (T-06)
         budget: BudgetConstraint | None = None
-        budget_match = re.search(r"(?:under|below|max|less than|budget(?: of)?)\s+(\d+)\s*(?:naira|ngn|\$|usd|eur)?", lower)
+        budget_match = re.search(r"(?:under|below|max|less than|at most|up to|budget(?: of)?)\s+(\d+)\s*(?:naira|ngn|\$|usd|eur)?", lower)
         if budget_match:
             amount = budget_match.group(1)
             budget = BudgetConstraint(max_amount=amount, currency=request.budget_currency)
+        else:
+            min_match = re.search(r"(?:over|above|more than|at least)\s+(\d+)\s*(?:naira|ngn|\$|usd|eur)?", lower)
+            approx_match = re.search(r"(?:around|about|approximately)\s+(\d+)\s*(?:naira|ngn|\$|usd|eur)?", lower)
+            if min_match:
+                budget = BudgetConstraint(max_amount=None, min_amount=min_match.group(1), currency=request.budget_currency, comparison="min")
+            elif approx_match:
+                budget = BudgetConstraint(max_amount=approx_match.group(1), currency=request.budget_currency, comparison="approximate")
 
         # 7. Attributes extraction, self-correction, and negation (T-06)
         # Colors: red, blue, green, black, white, yellow, pupa (red in Yoruba)

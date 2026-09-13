@@ -50,22 +50,34 @@ class QuantityChange:
 
 @dataclass(frozen=True)
 class BudgetConstraint:
-    """Shopper budget limit constraint."""
+    """Shopper price relationship, kept separate from catalog evidence."""
 
-    max_amount: str
+    max_amount: str | None
     currency: str
     scope: str = "total"
+    min_amount: str | None = None
+    comparison: str = "max"
 
     def __post_init__(self):
         if self.scope not in ("total", "per_item", "unknown"):
             raise ValueError("Invalid budget scope")
+        if self.comparison not in ("max", "min", "range", "approximate", "exact"):
+            raise ValueError("Invalid budget comparison")
+        if self.max_amount is None and self.min_amount is None:
+            raise ValueError("Budget requires a minimum or maximum amount")
         curr = self.currency.upper()
         object.__setattr__(self, "currency", curr)
         if not curr.isalpha() or len(curr) != 3:
             raise ValueError(f"Invalid ISO currency code: {self.currency}")
 
     def to_dict(self) -> dict[str, str]:
-        return {"max_amount": self.max_amount, "currency": self.currency, "scope": self.scope}
+        return {
+            "max_amount": self.max_amount,
+            "min_amount": self.min_amount,
+            "currency": self.currency,
+            "scope": self.scope,
+            "comparison": self.comparison,
+        }
 
 
 def validate_shopping_intent_payload(data: Any) -> list[str]:
@@ -177,15 +189,19 @@ def validate_shopping_intent_payload(data: Any) -> list[str]:
         if not isinstance(bc, dict):
             errors.append(f"budget_constraint must be an object or null, got {type(bc).__name__}")
         else:
-            bc_unexpected = set(bc.keys()) - {"max_amount", "currency", "scope"}
+            bc_unexpected = set(bc.keys()) - {"max_amount", "min_amount", "currency", "scope", "comparison"}
             if bc_unexpected:
                 errors.append(f"budget_constraint has unexpected additional properties: {sorted(bc_unexpected)}")
             if bc.get("scope", "total") not in ("total", "per_item", "unknown"):
                 errors.append("budget_constraint scope must be total, per_item or unknown")
-            if "max_amount" not in bc:
-                errors.append("budget_constraint missing required property 'max_amount'")
-            elif not isinstance(bc["max_amount"], str):
+            if bc.get("max_amount") is not None and not isinstance(bc["max_amount"], str):
                 errors.append(f"budget_constraint max_amount must be a string, got {type(bc['max_amount']).__name__}")
+            if bc.get("min_amount") is not None and not isinstance(bc["min_amount"], str):
+                errors.append(f"budget_constraint min_amount must be a string, got {type(bc['min_amount']).__name__}")
+            if bc.get("max_amount") is None and bc.get("min_amount") is None:
+                errors.append("budget_constraint requires max_amount or min_amount")
+            if bc.get("comparison", "max") not in ("max", "min", "range", "approximate", "exact"):
+                errors.append("budget_constraint comparison is invalid")
             if "currency" not in bc:
                 errors.append("budget_constraint missing required property 'currency'")
             elif not isinstance(bc["currency"], str) or not re.match(r"^[A-Z]{3}$", bc["currency"]):
@@ -253,9 +269,11 @@ class ShoppingIntent:
         budget_dict = data.get("budget_constraint")
         budget = (
             BudgetConstraint(
-                max_amount=str(budget_dict["max_amount"]),
+                max_amount=str(budget_dict["max_amount"]) if budget_dict.get("max_amount") is not None else None,
                 currency=str(budget_dict["currency"]),
                 scope=budget_dict.get("scope", "total"),
+                min_amount=str(budget_dict["min_amount"]) if budget_dict.get("min_amount") is not None else None,
+                comparison=budget_dict.get("comparison", "max"),
             )
             if budget_dict
             else None

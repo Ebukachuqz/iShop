@@ -35,8 +35,9 @@ NEGATION AND SELF-CORRECTION (T-06):
 - Missing product: "Add to cart" with no item named -> product_query: null, unresolved_fields: ["product_query"].
 
 BUDGET CONSTRAINTS (T-06):
+- Represent the relationship explicitly with comparison: max, min, range, approximate or exact. Under/below/at most uses max; over/above/at least uses min; around/about uses approximate; never silently turn one into another.
 - Include scope: "per_item" for each-item limits, "total" for the requested quantity total, or "unknown" when ambiguous. Never silently choose a scope for an ambiguous multi-item request.
-- "Show me shirts under 5000 naira" -> budget_constraint: {"max_amount": "5000", "currency": "NGN"}.
+- "Show me shirts under 5000 naira" -> budget_constraint: {"max_amount": "5000", "min_amount": null, "comparison": "max", "currency": "NGN"}.
 
 EXPLICIT CHECKOUT (T-20, T-21):
 - Only "proceed to checkout", "take me to checkout", or "ready to pay" sets is_explicit_checkout_request: true, operation: "request_checkout".
@@ -51,7 +52,7 @@ You MUST respond ONLY with valid JSON conforming to this schema, with no markdow
   "selected_variant_attributes": { "attribute_name": "value" },
   "quantity_change": { "mode": "set" | "increment", "value": integer } | null,
   "target_line_key": "string" | null,
-  "budget_constraint": { "max_amount": "string", "currency": "string", "scope": "total" | "per_item" | "unknown" } | null,
+  "budget_constraint": { "max_amount": "string" | null, "min_amount": "string" | null, "comparison": "max" | "min" | "range" | "approximate" | "exact", "currency": "string", "scope": "total" | "per_item" | "unknown" } | null,
   "is_explicit_checkout_request": boolean,
   "supporting_transcript_span": "string",
   "original_language_wording": "string" | null,

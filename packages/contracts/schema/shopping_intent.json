@@ -77,7 +77,10 @@
       ],
       "properties": {
         "max_amount": {
-          "type": "string"
+          "type": ["string", "null"]
+        },
+        "min_amount": {
+          "type": ["string", "null"]
         },
         "currency": {
           "type": "string",
@@ -91,10 +94,14 @@
             "unknown"
           ],
           "default": "total"
+        },
+        "comparison": {
+          "type": "string",
+          "enum": ["max", "min", "range", "approximate", "exact"],
+          "default": "max"
         }
       },
       "required": [
-        "max_amount",
         "currency"
       ],
       "additionalProperties": false
