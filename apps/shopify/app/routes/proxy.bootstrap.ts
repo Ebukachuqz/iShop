@@ -1,7 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 
 import { createSessionGrant } from "../session-grant.server";
-import { getConfigurationRevision } from "../merchant-config.server";
+import { getConfigurationSnapshot } from "../merchant-config.server";
 import { authenticate } from "../shopify.server";
 
 function configuredDevelopmentOrigins() {
@@ -26,12 +26,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 
   const signingSecret = process.env.SESSION_SIGNING_SECRET ?? "";
-  const configRevision = await getConfigurationRevision(session.shop);
+  const configuration = await getConfigurationSnapshot(session.shop);
   const grant = createSessionGrant({
     shop: session.shop,
     origin: requestedOrigin,
     signingSecret,
-    configRevision,
+    configRevision: configuration.revision,
+    asrProfileId: configuration.selection.asr,
+    llmProfileId: configuration.selection.llm,
+    ttsProfileId: configuration.selection.tts,
   });
 
   return Response.json({ grant }, { headers: { "Cache-Control": "no-store" } });

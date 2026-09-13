@@ -267,10 +267,13 @@ class SessionGrant:
     permitted_origin: str
     anonymous_session_id: str
     config_revision: str
+    asr_profile_id: str
+    llm_profile_id: str
+    tts_profile_id: str
     issued_at_ms: int
     expires_at_ms: int
     signature: str
-    schema_version: str = SCHEMA_VERSION
+    schema_version: str = "1.1.0"
 
     @classmethod
     def create_signed(
@@ -280,30 +283,50 @@ class SessionGrant:
         permitted_origin: str,
         anonymous_session_id: str,
         config_revision: str,
+        asr_profile_id: str,
+        llm_profile_id: str,
+        tts_profile_id: str,
         issued_at_ms: int,
         ttl_ms: int,
         signing_secret: str,
     ) -> SessionGrant:
         expires_at_ms = issued_at_ms + ttl_ms
-        msg = f"{grant_id}|{shop_id}|{permitted_origin}|{anonymous_session_id}|{config_revision}|{issued_at_ms}|{expires_at_ms}"
-        sig = hmac.new(signing_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+        msg = (
+            f"{grant_id}|{shop_id}|{permitted_origin}|{anonymous_session_id}|"
+            f"{config_revision}|{asr_profile_id}|{llm_profile_id}|{tts_profile_id}|"
+            f"{issued_at_ms}|{expires_at_ms}"
+        )
+        sig = hmac.new(
+            signing_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
         return cls(
             grant_id=grant_id,
             shop_id=shop_id,
             permitted_origin=permitted_origin,
             anonymous_session_id=anonymous_session_id,
             config_revision=config_revision,
+            asr_profile_id=asr_profile_id,
+            llm_profile_id=llm_profile_id,
+            tts_profile_id=tts_profile_id,
             issued_at_ms=issued_at_ms,
             expires_at_ms=expires_at_ms,
             signature=sig,
+            schema_version="1.1.0",
         )
 
     def is_valid_at(self, current_time_ms: int) -> bool:
         return self.issued_at_ms <= current_time_ms <= self.expires_at_ms
 
     def verify_signature(self, signing_secret: str) -> bool:
-        msg = f"{self.grant_id}|{self.shop_id}|{self.permitted_origin}|{self.anonymous_session_id}|{self.config_revision}|{self.issued_at_ms}|{self.expires_at_ms}"
-        expected_sig = hmac.new(signing_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+        msg = (
+            f"{self.grant_id}|{self.shop_id}|{self.permitted_origin}|"
+            f"{self.anonymous_session_id}|{self.config_revision}|{self.asr_profile_id}|"
+            f"{self.llm_profile_id}|{self.tts_profile_id}|{self.issued_at_ms}|"
+            f"{self.expires_at_ms}"
+        )
+        expected_sig = hmac.new(
+            signing_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
         return hmac.compare_digest(self.signature, expected_sig)
 
     def verify_tenancy(self, expected_shop_id: str, request_origin: str) -> bool:

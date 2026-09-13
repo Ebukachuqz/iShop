@@ -18,7 +18,9 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     app = create_voice_app(
         signing_secret=active.signing_secret,
         allowed_origins=set(active.allowed_origins),
-        session_factory=make_session,
+        session_factories={"sahara-stream-pcm": make_session},
+        allowed_llm_profiles={"groq-gpt-oss-120b"},
+        allowed_tts_profiles={"sahara-tts-female-pcm"},
     )
 
     @app.get("/health")

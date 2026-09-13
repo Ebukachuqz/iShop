@@ -75,6 +75,14 @@ export async function saveMerchantConfiguration(input: {
   });
 }
 
-export async function getConfigurationRevision(shop: string) {
-  return (await getMerchantConfiguration(shop)).revision;
+export async function getConfigurationSnapshot(shop: string) {
+  const configuration = await getMerchantConfiguration(shop);
+  const selection = {
+    asr: configuration.asrProfileId,
+    llm: configuration.llmProfileId,
+    tts: configuration.ttsProfileId,
+  };
+  const errors = validateProfileSelection(selection);
+  if (Object.keys(errors).length) throw new InvalidConfigurationError(errors);
+  return { revision: configuration.revision, selection };
 }

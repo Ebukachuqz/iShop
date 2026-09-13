@@ -7,6 +7,9 @@
     "permitted_origin": "https://my-store.myshopify.com",
     "anonymous_session_id": "sess_0123456789abcdef",
     "config_revision": "rev_1",
+    "asr_profile_id": "sahara-stream-pcm",
+    "llm_profile_id": "groq-gpt-oss-120b",
+    "tts_profile_id": "sahara-tts-female-pcm",
     "issued_at_ms": 1000000,
     "expires_at_ms": 2800000
   },
@@ -16,6 +19,9 @@
     "permitted_origin": "https://my-store.myshopify.com",
     "anonymous_session_id": "sess_0123456789abcdef",
     "config_revision": "rev_1",
+    "asr_profile_id": "sahara-stream-pcm",
+    "llm_profile_id": "groq-gpt-oss-120b",
+    "tts_profile_id": "sahara-tts-female-pcm",
     "issued_at_ms": 100000,
     "expires_at_ms": 200000
   }

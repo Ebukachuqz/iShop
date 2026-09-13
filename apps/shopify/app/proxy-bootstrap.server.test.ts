@@ -11,21 +11,28 @@ vi.mock("./shopify.server", () => ({
 }));
 
 vi.mock("./merchant-config.server", () => ({
-  getConfigurationRevision: vi.fn(),
+  getConfigurationSnapshot: vi.fn(),
 }));
 
 import { authenticate } from "./shopify.server";
-import { getConfigurationRevision } from "./merchant-config.server";
+import { getConfigurationSnapshot } from "./merchant-config.server";
 
 describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
   const originalEnv = { ...process.env };
   const mockAppProxy = authenticate.public.appProxy as unknown as ReturnType<typeof vi.fn>;
-  const mockRevision = getConfigurationRevision as unknown as ReturnType<typeof vi.fn>;
+  const mockConfiguration = getConfigurationSnapshot as unknown as ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     process.env.SESSION_SIGNING_SECRET = "test-signing-secret-with-at-least-32-characters";
     process.env.DEV_ALLOWED_ORIGINS = "https://example-shop.myshopify.com,https://shop.example.com";
-    mockRevision.mockResolvedValue("config-test-revision");
+    mockConfiguration.mockResolvedValue({
+      revision: "config-test-revision",
+      selection: {
+        asr: "sahara-stream-pcm",
+        llm: "groq-gpt-oss-120b",
+        tts: "sahara-tts-female-pcm",
+      },
+    });
   });
 
   afterEach(() => {
@@ -73,6 +80,9 @@ describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
     expect(data.grant.shop_id).toBe("example-shop.myshopify.com");
     expect(data.grant.permitted_origin).toBe("https://example-shop.myshopify.com");
     expect(data.grant.config_revision).toBe("config-test-revision");
+    expect(data.grant.asr_profile_id).toBe("sahara-stream-pcm");
+    expect(data.grant.llm_profile_id).toBe("groq-gpt-oss-120b");
+    expect(data.grant.tts_profile_id).toBe("sahara-tts-female-pcm");
     expect(signatureMatches(data.grant, process.env.SESSION_SIGNING_SECRET!)).toBe(true);
   });
 });

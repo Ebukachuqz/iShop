@@ -1,12 +1,15 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 export type SessionGrant = {
-  schema_version: "1.0.0";
+  schema_version: "1.1.0";
   grant_id: string;
   shop_id: string;
   permitted_origin: string;
   anonymous_session_id: string;
   config_revision: string;
+  asr_profile_id: string;
+  llm_profile_id: string;
+  tts_profile_id: string;
   issued_at_ms: number;
   expires_at_ms: number;
   signature: string;
@@ -19,6 +22,9 @@ const grantMessage = (grant: Omit<SessionGrant, "schema_version" | "signature">)
     grant.permitted_origin,
     grant.anonymous_session_id,
     grant.config_revision,
+    grant.asr_profile_id,
+    grant.llm_profile_id,
+    grant.tts_profile_id,
     grant.issued_at_ms,
     grant.expires_at_ms,
   ].join("|");
@@ -39,6 +45,9 @@ export function createSessionGrant(input: {
   nowMs?: number;
   ttlMs?: number;
   configRevision?: string;
+  asrProfileId: string;
+  llmProfileId: string;
+  ttsProfileId: string;
 }): SessionGrant {
   if (input.signingSecret.length < 32) {
     throw new Error("SESSION_SIGNING_SECRET must contain at least 32 characters");
@@ -51,12 +60,15 @@ export function createSessionGrant(input: {
     permitted_origin: input.origin,
     anonymous_session_id: `sess_${randomUUID().replaceAll("-", "")}`,
     config_revision: input.configRevision ?? "default-v1",
+    asr_profile_id: input.asrProfileId,
+    llm_profile_id: input.llmProfileId,
+    tts_profile_id: input.ttsProfileId,
     issued_at_ms: issuedAt,
     expires_at_ms: issuedAt + (input.ttlMs ?? 5 * 60 * 1000),
   };
 
   return {
-    schema_version: "1.0.0",
+    schema_version: "1.1.0",
     ...unsigned,
     signature: signGrantPayload(unsigned, input.signingSecret),
   };

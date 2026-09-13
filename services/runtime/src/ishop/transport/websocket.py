@@ -24,6 +24,9 @@ def create_voice_app(
     signing_secret: str,
     allowed_origins: set[str],
     session_factory: SessionFactory | None = None,
+    session_factories: dict[str, SessionFactory] | None = None,
+    allowed_llm_profiles: set[str] | None = None,
+    allowed_tts_profiles: set[str] | None = None,
     clock_ms: Callable[[], int] | None = None,
 ) -> FastAPI:
     """Create the minimal authenticated voice transport used by WP-02."""
@@ -32,7 +35,21 @@ def create_voice_app(
     if not allowed_origins:
         raise ValueError("At least one allowed storefront origin is required")
 
-    make_session = session_factory or _make_sahara_session
+    factories = (
+        session_factories
+        if session_factories is not None
+        else {"sahara-stream-pcm": session_factory or _make_sahara_session}
+    )
+    llm_profiles = (
+        allowed_llm_profiles
+        if allowed_llm_profiles is not None
+        else {"groq-gpt-oss-120b"}
+    )
+    tts_profiles = (
+        allowed_tts_profiles
+        if allowed_tts_profiles is not None
+        else {"sahara-tts-female-pcm"}
+    )
     now_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
     app = FastAPI()
 
@@ -52,6 +69,14 @@ def create_voice_app(
                 grant = _authenticate(first, shop_id, origin, signing_secret, now_ms())
             except (TypeError, ValueError):
                 await websocket.close(code=4401, reason="invalid_session_grant")
+                return
+            make_session = factories.get(grant.asr_profile_id)
+            if (
+                make_session is None
+                or grant.llm_profile_id not in llm_profiles
+                or grant.tts_profile_id not in tts_profiles
+            ):
+                await websocket.close(code=4404, reason="provider_profile_unavailable")
                 return
             await websocket.send_json(
                 {
@@ -187,6 +212,9 @@ def _authenticate(
         "permitted_origin",
         "anonymous_session_id",
         "config_revision",
+        "asr_profile_id",
+        "llm_profile_id",
+        "tts_profile_id",
         "issued_at_ms",
         "expires_at_ms",
         "signature",
@@ -194,6 +222,8 @@ def _authenticate(
     if set(raw_grant) != allowed:
         raise ValueError("Invalid session grant fields")
     grant = SessionGrant(**raw_grant)
+    if grant.schema_version != "1.1.0":
+        raise ValueError("Unsupported session grant version")
     if not grant.is_valid_at(current_time_ms):
         raise ValueError("Session grant expired or not yet valid")
     if not grant.verify_signature(signing_secret):

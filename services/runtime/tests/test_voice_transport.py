@@ -2,6 +2,7 @@
 
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 from ishop.domain.models import SessionGrant
 from ishop.speech.base import SpeechProviderError
@@ -58,6 +59,9 @@ def signed_grant(**changes):
         "permitted_origin": ORIGIN,
         "anonymous_session_id": "sess_0123456789abcdef",
         "config_revision": "config_1",
+        "asr_profile_id": "sahara-stream-pcm",
+        "llm_profile_id": "groq-gpt-oss-120b",
+        "tts_profile_id": "sahara-tts-female-pcm",
         "issued_at_ms": now - 1000,
         "ttl_ms": 60000,
         "signing_secret": SECRET,
@@ -182,6 +186,61 @@ def test_unsupported_audio_format_never_starts_provider():
         socket.send_json({"type": "start_turn", "revision": 1, "sample_rate": 1000})
         error = socket.receive_json()
     assert error["error_code"] == "unsupported_audio_format"
+    assert sessions == []
+
+
+def test_unavailable_speech_profile_is_rejected_without_fallback():
+    app, sessions = app_with_capture()
+    with TestClient(app).websocket_connect(
+        f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+    ) as socket:
+        socket.send_json(
+            {
+                "type": "authenticate",
+                "grant": signed_grant(asr_profile_id="batch-only-profile"),
+            }
+        )
+        try:
+            socket.receive_json()
+            raise AssertionError("Unavailable profile remained connected")
+        except Exception as exc:
+            assert getattr(exc, "code", None) == 4404
+    assert sessions == []
+
+
+def test_explicitly_empty_profile_registry_rejects_all_profiles():
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        session_factories={},
+        clock_ms=lambda: int(time.time() * 1000),
+    )
+    with TestClient(app).websocket_connect(
+        f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+    ) as socket:
+        socket.send_json({"type": "authenticate", "grant": signed_grant()})
+        try:
+            socket.receive_json()
+            raise AssertionError("Empty registry restored the default profile")
+        except Exception as exc:
+            assert getattr(exc, "code", None) == 4404
+
+
+@pytest.mark.parametrize(
+    ("field", "profile"),
+    [("llm_profile_id", "unknown-llm"), ("tts_profile_id", "unknown-voice")],
+)
+def test_unavailable_reasoning_or_voice_profile_is_rejected(field, profile):
+    app, sessions = app_with_capture()
+    with TestClient(app).websocket_connect(
+        f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+    ) as socket:
+        socket.send_json({"type": "authenticate", "grant": signed_grant(**{field: profile})})
+        try:
+            socket.receive_json()
+            raise AssertionError("Unavailable profile remained connected")
+        except Exception as exc:
+            assert getattr(exc, "code", None) == 4404
     assert sessions == []
 
 
