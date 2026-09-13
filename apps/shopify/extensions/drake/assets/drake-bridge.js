@@ -10,7 +10,7 @@
 import { AjaxCartAdapter } from './drake-ajax.js';
 import { StandardActionsAdapter } from './drake-standard-actions.js';
 import { WebMcpAdapter } from './drake-webmcp.js';
-import { computeExpectedCart, isCartEquivalent, validateCommandSafety } from './drake-browser-contracts.js';
+import { cartFingerprint, computeExpectedCart, isCartEquivalent, validateCommandSafety } from './drake-browser-contracts.js';
 
 export { AjaxCartAdapter, StandardActionsAdapter, WebMcpAdapter };
 
@@ -162,18 +162,7 @@ export class StorefrontBridge {
   }
 
   async _fingerprintCart(cart) {
-    const canonical = (cart.lines || []).map((line) => ({
-      variant_id: String(line.variant_id || ''),
-      quantity: Number(line.quantity || 0),
-      selling_plan_id: line.selling_plan_id || null,
-      properties: Object.fromEntries(Object.entries(line.properties || {}).sort()),
-    })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const payload = JSON.stringify({ shop_id: cart.shop_id, currency: cart.currency, lines: canonical });
-    if (globalThis.crypto?.subtle) {
-      const bytes = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
-      return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
-    }
-    return payload;
+    return cartFingerprint(cart);
   }
 
   async _dispatchWebMcp(command) {

@@ -66,3 +66,19 @@ def test_cart_different_quantity_not_equivalent():
 
     assert not cart1.is_equivalent(cart2)
     assert cart1.fingerprint() != cart2.fingerprint()
+
+
+def test_cart_v1_fingerprint_matches_browser_contract():
+    assert CartSnapshot("store.myshopify.com", "USD").fingerprint() == (
+        "0b67ea4fa5fd4ee2aa90a7b316be131823a2ce3359a887d95ac8fe38bc2cf6e0"
+    )
+    cart = CartSnapshot(
+        "store.myshopify.com",
+        "USD",
+        (
+            CartLine("v2", 1, "plan-1", {"x": "a&b=c"}),
+            CartLine("v1", 2, properties={"size": "M", "note": "雪"}),
+            CartLine("v1", 1, properties={"note": "雪", "size": "M"}),
+        ),
+    )
+    assert cart.fingerprint() == "b0181186fd87e3564b9f7f22f80d4538c25bd4956ba602e7e8d3ad1129ed6b17"

@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { isCartEquivalent } from '../src/index.js';
+import { cartFingerprint } from '../../../apps/shopify/extensions/drake/assets/drake-browser-contracts.js';
 import { AjaxCartAdapter } from '../../../apps/shopify/extensions/drake/src/bridge/ajax.js';
 import { StandardActionsAdapter } from '../../../apps/shopify/extensions/drake/src/bridge/standard_actions.js';
 import { WebMcpAdapter } from '../../../apps/shopify/extensions/drake/src/bridge/webmcp.js';
@@ -11,6 +12,46 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
     const adapter = new WebMcpAdapter(null, 'trusted-shop.myshopify.com');
     const cart = adapter.normalizeCart({ shop_id: 'store.myshopify.com', currency: 'USD', lines: [] });
     assert.equal(cart.shop_id, 'trusted-shop.myshopify.com');
+  });
+
+  test('browser cart fingerprints match the Python cart-v1 contract', async () => {
+    assert.equal(
+      await cartFingerprint({ shop_id: 'store.myshopify.com', currency: 'USD', lines: [] }),
+      '0b67ea4fa5fd4ee2aa90a7b316be131823a2ce3359a887d95ac8fe38bc2cf6e0',
+    );
+    assert.equal(
+      await cartFingerprint({
+        shop_id: 'store.myshopify.com', currency: 'USD',
+        lines: [
+          { variant_id: 'v2', quantity: 1, selling_plan_id: 'plan-1', properties: { x: 'a&b=c' } },
+          { variant_id: 'v1', quantity: 2, properties: { size: 'M', note: '雪' } },
+          { variant_id: 'v1', quantity: 1, properties: { note: '雪', size: 'M' } },
+        ],
+      }),
+      'b0181186fd87e3564b9f7f22f80d4538c25bd4956ba602e7e8d3ad1129ed6b17',
+    );
+  });
+
+  test('dispatches once when an unchanged cart satisfies the shared fingerprint', async () => {
+    const cart = { shop_id: 'store.myshopify.com', currency: 'USD', lines: [] };
+    let writes = 0;
+    const bridge = new StorefrontBridge({
+      ajaxAdapter: {
+        readCart: async () => writes === 0 ? cart : {
+          ...cart, lines: [{ variant_id: 'v1', quantity: 1, properties: {}, selling_plan_id: null }],
+        },
+        addVariant: async () => { writes += 1; return { ok: true, errors: [] }; },
+      },
+      webMcpAdapter: { isAvailable: () => false },
+      actionsAdapter: { isAvailable: () => false },
+    });
+    const receipt = await bridge.executeCommand({
+      operation: 'add_variant',
+      expected_cart_fingerprint: '0b67ea4fa5fd4ee2aa90a7b316be131823a2ce3359a887d95ac8fe38bc2cf6e0',
+      parameters: { variant_id: 'v1', quantity: 1 },
+    });
+    assert.equal(receipt.outcome, 'verified_success');
+    assert.equal(writes, 1);
   });
 
   test('reads cart data from supported WebMCP result envelopes', async () => {

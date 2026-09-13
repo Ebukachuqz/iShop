@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
@@ -167,11 +168,24 @@ class CartSnapshot:
         return counter
 
     def fingerprint(self) -> str:
-        """Deterministic sha256 fingerprint of canonical lines multiset."""
-        counter = self.multiset_counter()
-        sorted_elements = sorted(counter.items())
-        serialized = ";".join(f"{key}*x{qty}" for key, qty in sorted_elements)
-        content = f"{self.shop_id}|{self.currency}|{serialized}"
+        """Deterministic SHA-256 of the versioned cross-runtime cart identity."""
+        quantities: Counter[str] = Counter()
+        identities: dict[str, list[Any]] = {}
+        for line in self.lines:
+            identity = [
+                str(line.variant_id),
+                str(line.selling_plan_id) if line.selling_plan_id else None,
+                [[str(key), str(value)] for key, value in sorted(line.properties.items())],
+            ]
+            identity_json = json.dumps(identity, ensure_ascii=False, separators=(",", ":"))
+            quantities[identity_json] += line.quantity
+            identities[identity_json] = identity
+        lines = [identities[key] + [quantities[key]] for key in sorted(quantities)]
+        content = json.dumps(
+            ["cart-v1", self.shop_id, self.currency, lines],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def is_equivalent(self, other: Any) -> bool:

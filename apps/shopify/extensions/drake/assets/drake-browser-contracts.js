@@ -96,6 +96,34 @@ export function isCartEquivalent(cartA, cartB) {
   return true;
 }
 
+export function cartFingerprintPayload(cart) {
+  const quantities = new Map();
+  const identities = new Map();
+  for (const line of cart?.lines || []) {
+    const identity = [
+      String(line.variant_id ?? ''),
+      line.selling_plan_id ? String(line.selling_plan_id) : null,
+      Object.entries(normalizeProperties(line.properties)),
+    ];
+    const key = JSON.stringify(identity);
+    quantities.set(key, (quantities.get(key) || 0) + Number(line.quantity || 0));
+    identities.set(key, identity);
+  }
+  const lines = [...quantities.keys()]
+    .sort()
+    .map((key) => [...identities.get(key), quantities.get(key)]);
+  return JSON.stringify(['cart-v1', String(cart?.shop_id ?? ''), String(cart?.currency ?? ''), lines]);
+}
+
+export async function cartFingerprint(cart) {
+  if (!globalThis.crypto?.subtle) throw new Error('cart_fingerprint_crypto_unavailable');
+  const bytes = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(cartFingerprintPayload(cart)),
+  );
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * Computes the expected CartSnapshot after applying a command to beforeCart (S-06, S-08, T-10).
  */
