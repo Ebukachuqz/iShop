@@ -2,7 +2,7 @@
   "manifest_version": "2.0.0",
   "configuration": {
     "code_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-    "evidence_sha256": "1ffec639968801cb96c182e9d9fb3d3ee58b0205b625d3c4e63e11d8033d3c0f",
+    "evidence_sha256": "79f7ca63cbe16f2f1b9d062d7dbf4f54a565f1c027ebecfd36bef04b40205774",
     "llm": {
       "profile_id": "fake-offline-dev",
       "provider_name": "fake",
@@ -25,7 +25,7 @@
   "created_at_utc": "2026-09-12T00:00:00Z",
   "mode": "human_transcript",
   "normalization_version": "ishop-unicode-v1",
-  "manifest_hash": "e00cbd0ac3ad8b7418f7ece8e1668b3df6ccc2f488239f9446ed8bff79ca178a",
+  "manifest_hash": "ba8f29d468c4355bbb68d261559a2c15147f1ecf87c5c71a95d1b9a43a234ea0",
   "episodes": [
     {
       "episode_id": "ep_01_valid_pcm",

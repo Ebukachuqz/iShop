@@ -292,6 +292,91 @@ def test_current_product_id_resolves_implicit_product_page_add(store_evidence, e
     assert result.authorized_command.parameters["variant_id"] == "var_cap"
 
 
+def test_cheapest_followup_reuses_the_active_search_subject(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("find shirts", ShoppingIntent(
+        intent_id="int_search", operation=IntentOperation.SEARCH,
+        product_query="shirt", is_explicit_checkout_request=False,
+        supporting_transcript_span="Find shirts",
+    ))
+    provider.register_custom_intent("which is cheapest", ShoppingIntent(
+        intent_id="int_rank", operation=IntentOperation.BROWSE,
+        product_query=None, is_explicit_checkout_request=False,
+        supporting_transcript_span="Which is cheapest?",
+    ))
+    controller = ShoppingController(provider)
+    first = asyncio.run(controller.handle_turn(
+        "s", "t1", 1, 1, "Find shirts", store_evidence, empty_cart,
+    ))
+    assert first.result_product_ids == ("prod_tee",)
+
+    no_products = EvidenceSnapshot(
+        snapshot_id="empty", shop_id=store_evidence.shop_id,
+        currency=store_evidence.currency, observed_at_ms=store_evidence.observed_at_ms,
+    )
+    request = asyncio.run(controller.handle_turn(
+        "s", "t2", 2, 1, "Which is cheapest?", no_products, empty_cart,
+    ))
+    assert request.status == "evidence_required"
+    assert request.evidence_query == "shirt"
+
+
+def test_product_title_answer_resumes_pending_add_operation(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("add them to my cart", ShoppingIntent(
+        intent_id="int_add", operation=IntentOperation.ADD_TO_CART,
+        product_query=None, is_explicit_checkout_request=False,
+        supporting_transcript_span="Add them to my cart",
+        unresolved_fields=("product_query",),
+    ))
+    provider.register_custom_intent("embroidered cap", ShoppingIntent(
+        intent_id="int_answer", operation=IntentOperation.SEARCH,
+        product_query="Embroidered Cap", is_explicit_checkout_request=False,
+        supporting_transcript_span="Embroidered Cap",
+    ))
+    controller = ShoppingController(provider)
+
+    first = asyncio.run(controller.handle_turn(
+        "s", "t1", 1, 1, "Add them to my cart", store_evidence, empty_cart,
+    ))
+    assert first.status == "clarification_needed"
+    assert first.clarification_fields == ("product_query",)
+
+    second = asyncio.run(controller.handle_turn(
+        "s", "t2", 2, 1, "Embroidered Cap", store_evidence, empty_cart,
+    ))
+    assert second.authorized_command is not None
+    assert second.authorized_command.operation == CommandOperation.ADD_VARIANT
+    assert second.authorized_command.parameters["variant_id"] == "var_cap"
+    assert second.extracted_intent.operation == IntentOperation.ADD_TO_CART
+
+
+def test_explicit_new_search_does_not_resume_pending_add(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("add them to my cart", ShoppingIntent(
+        intent_id="int_add", operation=IntentOperation.ADD_TO_CART,
+        product_query=None, is_explicit_checkout_request=False,
+        supporting_transcript_span="Add them to my cart",
+        unresolved_fields=("product_query",),
+    ))
+    provider.register_custom_intent("find embroidered caps", ShoppingIntent(
+        intent_id="int_search_new", operation=IntentOperation.SEARCH,
+        product_query="Embroidered Cap", is_explicit_checkout_request=False,
+        supporting_transcript_span="Find embroidered caps",
+    ))
+    controller = ShoppingController(provider)
+    asyncio.run(controller.handle_turn(
+        "s", "t1", 1, 1, "Add them to my cart", store_evidence, empty_cart,
+    ))
+
+    result = asyncio.run(controller.handle_turn(
+        "s", "t2", 2, 1, "Find embroidered caps", store_evidence, empty_cart,
+    ))
+    assert result.authorized_command is None
+    assert result.result_product_ids == ("prod_cap",)
+    assert result.extracted_intent.operation == IntentOperation.SEARCH
+
+
 def test_t03_variant_ambiguity_triggers_clarification_no_silent_substitution(store_evidence, empty_cart):
     """T-03, S-04: Missing size option requires clarification; no silent substitution."""
     fake_llm = FakeLlmProvider()

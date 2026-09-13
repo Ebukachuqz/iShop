@@ -90,6 +90,7 @@ class ControllerSessionState:
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     active_search_query: str | None = None
     active_search_product_ids: tuple[str, ...] = ()
+    pending_clarification_intent: ShoppingIntent | None = None
 
 
 @dataclass(frozen=True)
@@ -299,11 +300,56 @@ class ShoppingController:
                 )
 
         lower_transcript = transcript.casefold()
+        pending_clarification = sess.pending_clarification_intent
+        starts_new_read = any(
+            re.search(rf"\b{word}\b", lower_transcript)
+            for word in ("find", "search", "show", "browse", "compare", "describe")
+        )
+        if (
+            pending_clarification is not None
+            and pending_clarification.operation
+            in {
+                IntentOperation.ADD_TO_CART,
+                IntentOperation.UPDATE_QUANTITY,
+                IntentOperation.REMOVE_FROM_CART,
+            }
+            and intent.operation
+            in {IntentOperation.SEARCH, IntentOperation.BROWSE, IntentOperation.DESCRIBE_PRODUCT}
+            and intent.product_query
+            and not starts_new_read
+        ):
+            # A bare product title/selection answers the preceding cart
+            # clarification. Preserve the authorized operation instead of
+            # allowing a fresh LLM classification to turn it into a search.
+            intent = replace(
+                pending_clarification,
+                intent_id=intent.intent_id,
+                product_query=intent.product_query,
+                selected_variant_attributes=(
+                    intent.selected_variant_attributes
+                    or pending_clarification.selected_variant_attributes
+                ),
+                supporting_transcript_span=transcript.strip(),
+                original_language_wording=intent.original_language_wording,
+                unresolved_fields=tuple(
+                    field_name
+                    for field_name in pending_clarification.unresolved_fields
+                    if field_name not in {"product_query", "product_selection"}
+                ),
+            )
+
         asks_for_result_ranking = any(
             phrase in lower_transcript for phrase in ("cheapest", "lowest", "least expensive", "closest to")
         )
         if asks_for_result_ranking and not intent.product_query and sess.active_search_query:
             intent = replace(intent, product_query=sess.active_search_query)
+
+        if starts_new_read and intent.operation in {
+            IntentOperation.SEARCH,
+            IntentOperation.BROWSE,
+            IntentOperation.DESCRIBE_PRODUCT,
+        }:
+            sess.pending_clarification_intent = None
 
         if (
             intent.operation
@@ -377,7 +423,7 @@ class ShoppingController:
             IntentOperation.UPDATE_QUANTITY,
             IntentOperation.REMOVE_FROM_CART,
         ):
-            return await self._handle_cart_mutation(
+            result = await self._handle_cart_mutation(
                 session_id=session_id,
                 turn_id=turn_id,
                 request_revision=request_revision,
@@ -388,6 +434,14 @@ class ShoppingController:
                 client=client,
                 now_ms=now,
             )
+            if (
+                result.status == "clarification_needed"
+                and set(result.clarification_fields) & {"product_query", "product_selection"}
+            ):
+                sess.pending_clarification_intent = intent
+            elif result.status != "evidence_required":
+                sess.pending_clarification_intent = None
+            return result
 
         elif intent.operation == IntentOperation.REQUEST_CHECKOUT:
             return self._handle_checkout(
