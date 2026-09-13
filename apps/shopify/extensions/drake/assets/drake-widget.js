@@ -68,6 +68,7 @@
       this.bridge = null;
       this.catalog = null;
       this.currentProductId = null;
+      this.currentProductHandle = null;
       this.candidates = new CandidateSet([]);
       this.capture = null;
       this.playback = voice ? new voice.AudioPlayback() : null;
@@ -164,6 +165,7 @@
       this.bridge = integrations?.bridge || null;
       this.catalog = integrations?.catalog || null;
       this.currentProductId = integrations?.currentProductId || null;
+      this.currentProductHandle = integrations?.currentProductHandle || null;
       this.client.onEvent = (event) => this.handleVoiceEvent(event);
       this.setState("ready");
     }
@@ -349,6 +351,12 @@
         this.setState("checking");
         await this.client.connect();
         const currentCart = await this.bridge.readAuthoritativeCart();
+        if (!catalogEvidence && this.currentProductHandle && typeof this.catalog.getByHandle === "function") {
+          const currentProduct = await this.catalog.getByHandle(this.currentProductHandle);
+          if (currentProduct) {
+            catalogEvidence = { query: currentProduct.product_id, products: [currentProduct] };
+          }
+        }
         const turn = existingTurn || {
           turnId: `turn_${crypto.randomUUID().replaceAll("-", "")}`,
           requestRevision: Math.max(1, this.client.revision + 1),

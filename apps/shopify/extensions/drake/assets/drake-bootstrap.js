@@ -32,7 +32,7 @@
       delete root.dataset.bootstrapStatus;
       window.dispatchEvent(
         new CustomEvent("ishop:bootstrap-ready", {
-          detail: { grant, shopDomain: root.dataset.shopDomain, currentProductId: root.dataset.currentProductId || null },
+          detail: { grant, shopDomain: root.dataset.shopDomain, currentProductId: root.dataset.currentProductId || null, currentProductHandle: root.dataset.currentProductHandle || null },
         }),
       );
       if (root.dataset.voiceWsUrl && window.IShopVoiceSession) {
@@ -48,6 +48,7 @@
               bridge,
               catalog,
               currentProductId: root.dataset.currentProductId || null,
+              currentProductHandle: root.dataset.currentProductHandle || null,
           },
         }));
       }

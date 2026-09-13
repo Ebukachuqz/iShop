@@ -109,6 +109,14 @@ export class AjaxCatalogAdapter {
     }
     return normalized;
   }
+
+  async getByHandle(handle) {
+    if (!handle) return null;
+    const response = await this.fetch(`${this.baseUrl}/products/${encodeURIComponent(handle)}.js`, { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error(`product_detail_failed_${response.status}`);
+    const raw = await response.json();
+    return normalizeCatalogProducts({ products: [raw] }, { currency: this.currency })[0] || null;
+  }
 }
 
 export class StorefrontCatalog {
@@ -125,5 +133,16 @@ export class StorefrontCatalog {
       }
     }
     return { source: 'ajax_product_json', products: await this.ajax.search(query, limit) };
+  }
+
+  async getByHandle(handle) {
+    if (this.webMcp.isAvailable() && typeof this.webMcp.getByHandle === 'function') {
+      try {
+        const product = await this.webMcp.getByHandle(handle);
+        if (product) return product;
+      } catch (_) {
+      }
+    }
+    return this.ajax.getByHandle(handle);
   }
 }
