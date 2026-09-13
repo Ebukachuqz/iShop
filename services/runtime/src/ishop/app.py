@@ -76,6 +76,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             "clarification_fields": list(result.clarification_fields),
             "evidence_query": result.evidence_query,
             "result_product_ids": list(result.result_product_ids),
+            "selected_tool": result.selected_tool,
         }
         if result.spoken_response:
             try:

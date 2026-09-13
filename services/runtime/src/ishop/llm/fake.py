@@ -31,6 +31,8 @@ from ishop.llm.base import (
     LlmProvider,
     LlmProviderError,
     LlmUsage,
+    LlmToolSelectionRequest,
+    LlmToolSelectionResult,
 )
 
 INJECTION_PATTERNS = [
@@ -323,3 +325,25 @@ class FakeLlmProvider(LlmProvider):
             return f"Here is your cart: {cart}."
 
         return f"Found matching options: {context.evidence_summary}."
+
+    async def select_tool(self, request: LlmToolSelectionRequest) -> LlmToolSelectionResult:
+        mapping = {
+            IntentOperation.SEARCH: "search_catalog",
+            IntentOperation.BROWSE: "browse_store",
+            IntentOperation.DESCRIBE_PRODUCT: "get_product",
+            IntentOperation.CHECK_AVAILABILITY: "get_product",
+            IntentOperation.VIEW_CART: "get_cart",
+            IntentOperation.ADD_TO_CART: "update_cart",
+            IntentOperation.UPDATE_QUANTITY: "update_cart",
+            IntentOperation.REMOVE_FROM_CART: "update_cart",
+            IntentOperation.NAVIGATE: "get_product",
+            IntentOperation.REQUEST_CHECKOUT: "proceed_to_checkout",
+        }
+        name = mapping[request.intent.operation]
+        allowed = {str(tool["name"]) for tool in request.qualified_tools}
+        if name not in allowed:
+            raise LlmProviderError(f"Qualified tool unavailable: {name}", self.profile.profile_id)
+        arguments = {"operation": request.intent.operation.value}
+        if request.intent.product_query:
+            arguments["query"] = request.intent.product_query
+        return LlmToolSelectionResult(name, arguments, "Deterministic offline tool selection", json.dumps({"tool_name": name, "arguments": arguments}))

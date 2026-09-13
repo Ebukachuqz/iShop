@@ -109,6 +109,23 @@ class GroundedResponseContext:
     error_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class LlmToolSelectionRequest:
+    intent: ShoppingIntent
+    qualified_tools: tuple[dict[str, Any], ...]
+    resolved_context: Mapping[str, Any] = field(default_factory=dict)
+    turn_id: str = ""
+    request_revision: int = 1
+
+
+@dataclass(frozen=True)
+class LlmToolSelectionResult:
+    tool_name: str
+    arguments: dict[str, Any]
+    rationale: str
+    raw_response_text: str
+
+
 class LlmProvider(abc.ABC):
     """Provider-neutral interface for LLM shopping reasoning."""
 
@@ -127,6 +144,22 @@ class LlmProvider(abc.ABC):
     async def generate_grounded_response(self, context: GroundedResponseContext) -> str:
         """Generate response prose grounded strictly in verified evidence or receipts."""
         ...
+
+    async def select_tool(self, request: LlmToolSelectionRequest) -> LlmToolSelectionResult:
+        """Compatibility selector for test providers; production adapters override this with a model call."""
+        from ishop.domain.intent import IntentOperation
+        mapping = {
+            IntentOperation.SEARCH: "search_catalog", IntentOperation.BROWSE: "browse_store",
+            IntentOperation.DESCRIBE_PRODUCT: "get_product", IntentOperation.CHECK_AVAILABILITY: "get_product",
+            IntentOperation.VIEW_CART: "get_cart", IntentOperation.ADD_TO_CART: "update_cart",
+            IntentOperation.UPDATE_QUANTITY: "update_cart", IntentOperation.REMOVE_FROM_CART: "update_cart",
+            IntentOperation.NAVIGATE: "get_product", IntentOperation.REQUEST_CHECKOUT: "proceed_to_checkout",
+        }
+        name = mapping[request.intent.operation]
+        arguments: dict[str, Any] = {"operation": request.intent.operation.value}
+        if request.intent.product_query:
+            arguments["query"] = request.intent.product_query
+        return LlmToolSelectionResult(name, arguments, "Provider compatibility selection", "")
 
     @abc.abstractmethod
     def check_readiness(self) -> tuple[bool, str | None]:

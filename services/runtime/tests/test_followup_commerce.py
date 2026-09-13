@@ -8,7 +8,9 @@ from ishop.commerce.reconciler import CommandReconciler, ExecutionOutcome
 from ishop.commerce.simulator import ShopifySimulator, SimulationResult
 from ishop.commerce.verifier import CartVerifier, ProposedCartAction, QuantityOperation
 from ishop.domain.journal import CommandJournal
-from ishop.domain.models import CartLine, CartSnapshot, CommandOperation
+from ishop.domain.models import CartLine, CartSnapshot, CommandOperation, Money
+from ishop.commerce.catalog import EvidenceSnapshot, ProductEvidence, VariantEvidence
+from ishop.domain.intent import IntentOperation, QuantityChange, ShoppingIntent
 from ishop.llm.fake import FakeLlmProvider
 from ishop.orchestration.controller import ShoppingController
 
@@ -123,3 +125,27 @@ def test_f6_budget_scope_is_explicit(store_evidence, scope, expected):
     assert sum(line.quantity for line in sim.read_cart().lines) == expected
     if scope == "unknown":
         assert result.status == "clarification_needed"
+
+
+def test_option_only_reply_resumes_pending_product_clarification():
+    variants = tuple(
+        VariantEvidence(f"var_{color.lower()}", "prod_board", "Complete Snowboard", color,
+                        {"color": color}, Money(69995, "USD"), True)
+        for color in ("Ice", "Dawn")
+    )
+    evidence = EvidenceSnapshot("snap-board", "shop.myshopify.com", "USD", 1,
+        {"prod_board": ProductEvidence("prod_board", "Complete Snowboard", variants, ("color",))})
+    cart = CartSnapshot(evidence.shop_id, evidence.currency, ())
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("complete snowboard", ShoppingIntent(
+        "int-board", IntentOperation.ADD_TO_CART, False, "complete snowboard",
+        product_query="Complete Snowboard", quantity_change=QuantityChange("increment", 1),
+    ))
+    controller = ShoppingController(provider)
+    first = asyncio.run(controller.handle_turn("s", "t1", 1, 1,
+        "Add the Complete Snowboard", evidence, cart))
+    assert first.status == "clarification_needed"
+    assert "color" in first.clarification_fields
+    second = asyncio.run(controller.handle_turn("s", "t2", 2, 1, "Ice", evidence, cart))
+    assert second.authorized_command is not None
+    assert second.authorized_command.parameters["variant_id"] == "var_ice"

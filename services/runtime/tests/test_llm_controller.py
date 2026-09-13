@@ -661,3 +661,21 @@ def test_s06_end_to_end_simulator_reconciler_grounded_receipt(store_evidence, em
     entry = journal.get_entry(res.authorized_command.command_id)
     assert entry is not None
     assert entry.status.value == "verified_success"
+
+
+def test_current_page_reference_is_resolved_when_model_leaves_it_unknown(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("this product", ShoppingIntent(
+        intent_id="int_unresolved_page", operation=IntentOperation.ADD_TO_CART,
+        product_query=None, quantity_change=None,
+        is_explicit_checkout_request=False, supporting_transcript_span="this product",
+        unresolved_fields=("product_query",),
+    ))
+    simulator = ShopifySimulator(store_evidence.shop_id, store_evidence.currency)
+    result = asyncio.run(ShoppingController(provider, CommandReconciler(CommandJournal())).handle_turn(
+        "s-page", "t-page", 1, 1, "Add this product", store_evidence,
+        empty_cart, client=simulator, current_product_id="prod_cap",
+    ))
+    assert result.status == "completed"
+    assert result.authorized_command is not None
+    assert result.authorized_command.parameters["variant_id"] == "var_cap"

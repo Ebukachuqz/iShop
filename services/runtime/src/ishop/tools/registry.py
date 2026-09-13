@@ -13,6 +13,19 @@ class ToolDescriptor:
     mutating: bool = False
     navigation: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "version": "1.0.0",
+            "description": self.description,
+            "input_schema": {
+                "type": "object",
+                "required": list(self.required_parameters),
+                "additionalProperties": True,
+            },
+            "side_effect": "mutation" if self.mutating else ("navigation" if self.navigation else "read"),
+        }
+
 
 @dataclass(frozen=True)
 class ToolProposal:
@@ -22,12 +35,12 @@ class ToolProposal:
 
 
 TOOL_DESCRIPTORS: tuple[ToolDescriptor, ...] = (
-    ToolDescriptor("search_catalog", "Search products and store content.", ("query",)),
+    ToolDescriptor("search_catalog", "Search products and store content; a constraint-only search may omit free text."),
     ToolDescriptor("browse_store", "Browse collections or a collection's products."),
-    ToolDescriptor("get_product", "Read verified product and variant details.", ("product_id",)),
-    ToolDescriptor("show_variant", "Open a product with a verified variant selected.", ("product_id",)),
+    ToolDescriptor("get_product", "Read verified product and variant details from a resolved product reference."),
+    ToolDescriptor("show_variant", "Open a product with a verified variant selected."),
     ToolDescriptor("get_cart", "Read the authoritative cart."),
-    ToolDescriptor("update_cart", "Add, change, or remove a cart line.", ("operation",), True),
+    ToolDescriptor("update_cart", "Add, change, or remove a resolved cart line or variant.", ("operation",), True),
     ToolDescriptor("cancel_cart", "Clear the entire cart only when explicitly requested.", (), True),
     ToolDescriptor("proceed_to_checkout", "Navigate to checkout after verifying a non-empty cart.", (), False, True),
     ToolDescriptor("manage_orders", "Navigate to trusted order history or login.", (), False, True),
@@ -59,4 +72,3 @@ class ToolRegistry:
         if missing:
             raise ValueError(f"Missing tool arguments for {proposal.name}: {', '.join(missing)}")
         return descriptor
-

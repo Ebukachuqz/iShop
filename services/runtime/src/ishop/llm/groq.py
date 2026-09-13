@@ -25,6 +25,8 @@ from ishop.llm.base import (
     LlmProvider,
     LlmProviderError,
     LlmUsage,
+    LlmToolSelectionRequest,
+    LlmToolSelectionResult,
 )
 from ishop.llm.prompts import (
     GROUNDED_RESPONSE_SYSTEM_PROMPT,
@@ -175,6 +177,44 @@ class GroqLlmProvider(LlmProvider):
             usage=usage,
             profile_id=self.profile.profile_id,
         )
+
+    async def select_tool(self, request: LlmToolSelectionRequest) -> LlmToolSelectionResult:
+        if not self._profile.enabled or not self._api_key:
+            raise LlmProviderError("Groq tool selection is unavailable", self.profile.profile_id)
+        tools_json = json.dumps(list(request.qualified_tools), separators=(",", ":"))
+        prompt = (
+            "Select exactly one qualified shopping tool for the validated intent. "
+            "Return JSON with tool_name, arguments, and rationale. Never invent IDs or tools.\n"
+            f"Validated intent: {json.dumps(request.intent.to_dict())}\n"
+            f"Resolved context: {json.dumps(dict(request.resolved_context))}\n"
+            f"Qualified tools: {tools_json}"
+        )
+        payload = {
+            "model": self._model_name,
+            "messages": [
+                {"role": "system", "content": "You select from supplied shopping tools. Selection is a proposal and never execution authority."},
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.0,
+        }
+        try:
+            body = await asyncio.to_thread(
+                _http_post_json, GROQ_API_URL, json.dumps(payload).encode("utf-8"),
+                {"Content-Type": "application/json", "Authorization": f"Bearer {self._api_key}"}, 15.0,
+            )
+            raw = json.loads(body)["choices"][0]["message"]["content"]
+            data = json.loads(raw)
+            name = str(data["tool_name"])
+            arguments = data.get("arguments")
+            if not isinstance(arguments, dict):
+                raise ValueError("arguments must be an object")
+            allowed = {str(tool["name"]) for tool in request.qualified_tools}
+            if name not in allowed:
+                raise ValueError("tool is not qualified")
+            return LlmToolSelectionResult(name, arguments, str(data.get("rationale", "")), raw)
+        except Exception as exc:
+            raise LlmProviderError(f"Failed to select a qualified tool: {exc}", self.profile.profile_id, retryable=True, cause=exc) from exc
 
     async def generate_grounded_response(self, context: GroundedResponseContext) -> str:
         if not self._profile.enabled or not self._api_key:

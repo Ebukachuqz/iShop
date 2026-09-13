@@ -8,5 +8,4 @@ def test_registry_qualifies_and_validates_tools():
     assert names == {"search_catalog", "update_cart"}
     registry.validate(ToolProposal("search_catalog", {"query": "snowboard"}), available=names)
     with pytest.raises(ValueError):
-        registry.validate(ToolProposal("search_catalog", {}), available=names)
-
+        registry.validate(ToolProposal("update_cart", {}), available=names)
