@@ -98,6 +98,16 @@ test('widget state distinguishes listening, interpretation, failure, and verifie
   );
 });
 
+test('candidate references remain stable and reject unknown ordinals', () => {
+  const { CandidateSet } = loadWidgetState();
+  const candidates = new CandidateSet([
+    { product_id: 'p1', title: 'Black Shirt' },
+    { product_id: 'p2', title: 'Blue Shirt' },
+  ]);
+  assert.equal(candidates.resolve(2).product_id, 'p2');
+  assert.throws(() => candidates.resolve(3), /candidate_index_unavailable/);
+});
+
 test('widget renders untrusted shopper and store text without HTML insertion', () => {
   assert.equal(widgetSource.includes('.innerHTML'), false);
   assert.equal(widgetSource.includes('.insertAdjacentHTML'), false);

@@ -9,6 +9,18 @@
     completed: "Cart update verified", reconnecting: "Reconnecting", failed: "Something went wrong",
   };
 
+  class CandidateSet {
+    constructor(products) {
+      if (!Array.isArray(products)) throw new TypeError("candidate_products");
+      this.products = products.filter((product) => product && product.product_id && product.title).slice(0, 8);
+    }
+    resolve(index) {
+      const product = this.products[index - 1];
+      if (!product) throw new Error("candidate_index_unavailable");
+      return product;
+    }
+  }
+
   class WidgetState {
     constructor() {
       this.name = "initializing";
@@ -55,6 +67,7 @@
       this.client = null;
       this.bridge = null;
       this.catalog = null;
+      this.candidates = new CandidateSet([]);
       this.capture = null;
       this.playback = voice ? new voice.AudioPlayback() : null;
       this.open = false;
@@ -101,8 +114,10 @@
       this.error = element("p", "drake-error");
       this.error.setAttribute("role", "alert");
       this.error.hidden = true;
+      this.cards = element("div", "drake-cards");
       this.conversation.append(
         element("p", "drake-message drake-message--assistant", "Hi, I’m Drake. Tell me what you’re shopping for, or type below."),
+        this.cards,
         this.caption,
         this.error,
       );
@@ -216,6 +231,7 @@
         this.setState("failed", { error: "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
         if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
+        this.playTts(event.tts_audio_chunks);
         if (event.status === "clarification_needed") {
           this.setState("clarifying");
         } else if (event.authorized_command) {
@@ -226,6 +242,47 @@
       } else if (event.type === "closed") {
         this.setState("reconnecting");
       }
+    }
+
+    playTts(chunks) {
+      if (!this.playback || !Array.isArray(chunks)) return;
+      for (const chunk of chunks) {
+        if (!chunk || typeof chunk.audio_base64 !== "string") continue;
+        try {
+          const binary = atob(chunk.audio_base64);
+          const audio = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index += 1) audio[index] = binary.charCodeAt(index);
+          this.playback.enqueue({
+            audio: audio.buffer,
+            generation: this.playback.generation,
+            format: chunk.format || "wav",
+          });
+        } catch (_) {
+          this.setState("failed", { error: "Voice playback failed. The text response is still available." });
+        }
+      }
+    }
+
+    renderProducts(products) {
+      this.candidates = new CandidateSet(products);
+      this.cards.replaceChildren();
+      this.candidates.products.forEach((product, index) => {
+        const card = element("article", "drake-card");
+        card.append(element("h3", "drake-card__title", `${index + 1}. ${product.title}`));
+        (product.variants || []).slice(0, 3).forEach((variant) => {
+          const options = Object.entries(variant.selected_options || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
+          const price = variant.price ? `${variant.price.amount} ${variant.price.currency}` : "Price unavailable";
+          card.append(element("p", "drake-card__variant", `${variant.variant_title || "Standard"} · ${price}${options ? ` · ${options}` : ""}`));
+        });
+        const choose = element("button", "drake-card__choose", `Choose ${index + 1}`);
+        choose.type = "button";
+        choose.addEventListener("click", () => {
+          this.textInput.value = `the ${index + 1} one`;
+          this.textInput.focus();
+        });
+        card.append(choose);
+        this.cards.append(card);
+      });
     }
 
     async submitShoppingRequest(text) {
@@ -239,6 +296,7 @@
           this.catalog.search(text, 8),
           this.bridge.readAuthoritativeCart(),
         ]);
+        this.renderProducts(catalogResult.products);
         const requestRevision = Math.max(1, this.client.revision + 1);
         this.client.revision = requestRevision;
         this.client.sendShoppingTurn({
@@ -287,7 +345,7 @@
     }
   }
 
-  window.IShopDrakeWidget = { DrakeWidget, WidgetState, STATE_LABELS };
+  window.IShopDrakeWidget = { CandidateSet, DrakeWidget, WidgetState, STATE_LABELS };
   const root = document.getElementById("ishop-drake-root");
   if (root && window.IShopVoiceSession) {
     const widget = new DrakeWidget(root, window.IShopVoiceSession);
