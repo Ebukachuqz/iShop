@@ -4,6 +4,8 @@ import {
   createSessionGrant,
   signatureMatches,
   signGrantPayload,
+  createResumeReference,
+  verifyResumeReference,
 } from "./session-grant.server";
 
 describe("session grants", () => {
@@ -59,5 +61,14 @@ describe("session grants", () => {
     expect(signature).toBe(
       "d1bc2a29189b2e6e25e1bfecb4bbb0732cb540a5750d624f101ea093f9c83064",
     );
+  });
+
+  test("resumes only from a valid signed reference", () => {
+    const secret = "a-development-secret-with-32-characters";
+    const grant = createSessionGrant({ shop: "example.myshopify.com", origin: "https://shop.example.com",
+      signingSecret: secret, nowMs: Date.now(), asrProfileId: "asr", llmProfileId: "llm", ttsProfileId: "tts" });
+    const reference = createResumeReference(grant, secret);
+    expect(verifyResumeReference(reference, secret)?.session_id).toBe(grant.anonymous_session_id);
+    expect(verifyResumeReference(`${reference}x`, secret)).toBeNull();
   });
 });

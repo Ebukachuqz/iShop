@@ -84,5 +84,10 @@ describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
     expect(data.grant.llm_profile_id).toBe("groq-gpt-oss-120b");
     expect(data.grant.tts_profile_id).toBe("sahara-tts-female-pcm");
     expect(signatureMatches(data.grant, process.env.SESSION_SIGNING_SECRET!)).toBe(true);
+
+    const resumedRequest = new Request(`https://shop.example.com/proxy/bootstrap?origin=https://example-shop.myshopify.com&resume=${encodeURIComponent(data.resume_reference)}`);
+    mockAppProxy.mockResolvedValueOnce({ session: { shop: "example-shop.myshopify.com" } });
+    const resumed = await (await loader({ request: resumedRequest } as any)).json();
+    expect(resumed.grant.anonymous_session_id).toBe(data.grant.anonymous_session_id);
   });
 });

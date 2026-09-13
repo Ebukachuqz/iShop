@@ -90,6 +90,8 @@
       this.pendingCatalogProducts = [];
       this.pendingTurn = null;
       this.pendingReceipts = new Map();
+      this.messageHistory = [];
+      this.historyKey = `ishop:messages:${root.dataset.shopDomain || location.host}`;
       this.pageEpoch = 1;
       try {
         const key = `ishop:page-epoch:${root.dataset.shopDomain || location.host}`;
@@ -100,8 +102,22 @@
       }
       this.open = false;
       this.render();
+      this.restoreMessages();
       this.bind();
       this.setState("initializing");
+    }
+    restoreMessages() {
+      try {
+        const parsed = JSON.parse(sessionStorage.getItem(this.historyKey) || "[]");
+        if (!Array.isArray(parsed)) return;
+        this.messageHistory = parsed.filter((item) => item && ["shopper", "assistant"].includes(item.role) && typeof item.text === "string").slice(-16);
+        for (const item of this.messageHistory) {
+          const message = element("p", `drake-message drake-message--${item.role}`, item.text);
+          this.conversation.insertBefore(message, this.cards);
+        }
+      } catch (_) {
+        this.messageHistory = [];
+      }
     }
     render() {
       this.root.hidden = false;
@@ -439,6 +455,9 @@
       const message = element("p", `drake-message drake-message--${role}`, text);
       this.conversation.insertBefore(message, this.caption);
       this.conversation.scrollTop = this.conversation.scrollHeight;
+      this.messageHistory.push({ role, text: String(text || "") });
+      this.messageHistory = this.messageHistory.slice(-16);
+      try { sessionStorage.setItem(this.historyKey, JSON.stringify(this.messageHistory)); } catch (_) {}
     }
   }
 

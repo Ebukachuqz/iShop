@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "react-router";
 
-import { createSessionGrant } from "../session-grant.server";
+import { createResumeReference, createSessionGrant, verifyResumeReference } from "../session-grant.server";
 import { getConfigurationSnapshot } from "../merchant-config.server";
 import { authenticate } from "../shopify.server";
 
@@ -27,6 +27,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   const signingSecret = process.env.SESSION_SIGNING_SECRET ?? "";
   const configuration = await getConfigurationSnapshot(session.shop);
+  const resume = new URL(request.url).searchParams.get("resume");
+  const resumed = resume ? verifyResumeReference(resume, signingSecret) : null;
+  const canResume = resumed && resumed.shop_id === session.shop &&
+    resumed.permitted_origin === requestedOrigin && resumed.config_revision === configuration.revision;
   const grant = createSessionGrant({
     shop: session.shop,
     origin: requestedOrigin,
@@ -35,7 +39,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     asrProfileId: configuration.selection.asr,
     llmProfileId: configuration.selection.llm,
     ttsProfileId: configuration.selection.tts,
+    anonymousSessionId: canResume ? resumed.session_id : undefined,
   });
 
-  return Response.json({ grant }, { headers: { "Cache-Control": "no-store" } });
+  return Response.json({ grant, resume_reference: createResumeReference(grant, signingSecret) }, { headers: { "Cache-Control": "no-store" } });
 }

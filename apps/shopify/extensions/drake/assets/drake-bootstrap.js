@@ -4,6 +4,9 @@
 
   const url = new URL(root.dataset.bootstrapUrl, window.location.origin);
   url.searchParams.set("origin", window.location.origin);
+  const resumeKey = `ishop:resume:${root.dataset.shopDomain || window.location.host}`;
+  const savedResume = sessionStorage.getItem(resumeKey);
+  if (savedResume) url.searchParams.set("resume", savedResume);
 
   fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } })
     .then((response) => {
@@ -14,7 +17,8 @@
       }
       return response.json();
     })
-    .then(async ({ grant }) => {
+    .then(async ({ grant, resume_reference: resumeReference }) => {
+      if (resumeReference) sessionStorage.setItem(resumeKey, resumeReference);
       const [bridgeModule, catalogModule] = await Promise.all([
         import(root.dataset.bridgeScriptUrl),
         import(root.dataset.catalogScriptUrl),
