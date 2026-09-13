@@ -5,11 +5,14 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import secrets
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field, model_validator
 
 from ishop.domain.models import SessionGrant
 from ishop.speech.base import SpeechProviderError
@@ -17,6 +20,68 @@ from ishop.speech.realtime import RealtimeSpeechSession, SpeechEventKind, Speech
 from ishop.speech.sahara_stream import SaharaStreamingSession
 
 SessionFactory = Callable[..., RealtimeSpeechSession]
+
+
+class RevocationRequest(BaseModel):
+    profile_ids: list[str] = Field(default_factory=list, max_length=20)
+    shop_ids: list[str] = Field(default_factory=list, max_length=20)
+    config_revisions: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def require_selector(self) -> "RevocationRequest":
+        if not (self.profile_ids or self.shop_ids or self.config_revisions):
+            raise ValueError("At least one revocation selector is required")
+        return self
+
+
+@dataclass(frozen=True)
+class ActiveConnection:
+    grant: SessionGrant
+    websocket: WebSocket
+
+
+class SessionRevocationRegistry:
+    def __init__(self) -> None:
+        self._connections: dict[str, ActiveConnection] = {}
+        self._profile_ids: set[str] = set()
+        self._shop_ids: set[str] = set()
+        self._config_revisions: set[str] = set()
+
+    def is_revoked(self, grant: SessionGrant) -> bool:
+        return (
+            grant.shop_id in self._shop_ids
+            or grant.config_revision in self._config_revisions
+            or bool(
+                {
+                    grant.asr_profile_id,
+                    grant.llm_profile_id,
+                    grant.tts_profile_id,
+                }
+                & self._profile_ids
+            )
+        )
+
+    def register(self, grant: SessionGrant, websocket: WebSocket) -> bool:
+        if self.is_revoked(grant):
+            return False
+        self._connections[grant.grant_id] = ActiveConnection(grant, websocket)
+        return True
+
+    def unregister(self, grant_id: str) -> None:
+        self._connections.pop(grant_id, None)
+
+    async def revoke(self, request: RevocationRequest) -> int:
+        self._profile_ids.update(request.profile_ids)
+        self._shop_ids.update(request.shop_ids)
+        self._config_revisions.update(request.config_revisions)
+        matches = [
+            connection
+            for connection in self._connections.values()
+            if self.is_revoked(connection.grant)
+        ]
+        for connection in matches:
+            await connection.websocket.close(code=4410, reason="session_revoked")
+        return len(matches)
 
 
 def create_voice_app(
@@ -27,6 +92,8 @@ def create_voice_app(
     session_factories: dict[str, SessionFactory] | None = None,
     allowed_llm_profiles: set[str] | None = None,
     allowed_tts_profiles: set[str] | None = None,
+    control_secret: str | None = None,
+    revocations: SessionRevocationRegistry | None = None,
     clock_ms: Callable[[], int] | None = None,
 ) -> FastAPI:
     """Create the minimal authenticated voice transport used by WP-02."""
@@ -50,8 +117,21 @@ def create_voice_app(
         if allowed_tts_profiles is not None
         else {"sahara-tts-female-pcm"}
     )
+    revocation_secret = control_secret or signing_secret
+    if len(revocation_secret) < 32:
+        raise ValueError("Runtime control secret must contain at least 32 characters")
+    revocation_registry = revocations or SessionRevocationRegistry()
     now_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
     app = FastAPI()
+
+    @app.post("/internal/revocations")
+    async def revoke_sessions(payload: RevocationRequest, request: Request) -> dict[str, int]:
+        authorization = request.headers.get("authorization", "")
+        expected = f"Bearer {revocation_secret}"
+        if not secrets.compare_digest(authorization, expected):
+            raise HTTPException(status_code=401, detail="Invalid runtime control credential")
+        closed_sessions = await revocation_registry.revoke(payload)
+        return {"closed_sessions": closed_sessions}
 
     @app.websocket("/ws/voice/{shop_id}")
     async def voice_socket(websocket: WebSocket, shop_id: str) -> None:
@@ -63,6 +143,7 @@ def create_voice_app(
         await websocket.accept()
         session: RealtimeSpeechSession | None = None
         revision: int | None = None
+        grant: SessionGrant | None = None
         try:
             first = await websocket.receive_json()
             try:
@@ -77,6 +158,9 @@ def create_voice_app(
                 or grant.tts_profile_id not in tts_profiles
             ):
                 await websocket.close(code=4404, reason="provider_profile_unavailable")
+                return
+            if not revocation_registry.register(grant, websocket):
+                await websocket.close(code=4410, reason="session_revoked")
                 return
             await websocket.send_json(
                 {
@@ -181,6 +265,8 @@ def create_voice_app(
         finally:
             if session is not None:
                 await session.cancel()
+            if grant is not None:
+                revocation_registry.unregister(grant.grant_id)
 
     return app
 

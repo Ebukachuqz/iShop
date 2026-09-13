@@ -50,3 +50,14 @@ def test_runtime_settings_reject_wildcard_origin(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("SAHARA_API_KEY", "test-key")
     with pytest.raises(ValueError, match="Wildcard"):
         RuntimeSettings.from_environment()
+
+
+def test_runtime_settings_reject_short_control_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SESSION_SIGNING_SECRET", "runtime_test_signing_secret_123456789")
+    monkeypatch.setenv("DEV_ALLOWED_ORIGINS", "https://shop.myshopify.com")
+    monkeypatch.setenv("SAHARA_API_KEY", "test-key")
+    monkeypatch.setenv("RUNTIME_CONTROL_SECRET", "short")
+    with pytest.raises(ValueError, match="RUNTIME_CONTROL_SECRET"):
+        RuntimeSettings.from_environment()

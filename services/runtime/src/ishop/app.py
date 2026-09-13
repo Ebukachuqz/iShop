@@ -21,6 +21,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         session_factories={"sahara-stream-pcm": make_session},
         allowed_llm_profiles={"groq-gpt-oss-120b"},
         allowed_tts_profiles={"sahara-tts-female-pcm"},
+        control_secret=active.control_secret,
     )
 
     @app.get("/health")

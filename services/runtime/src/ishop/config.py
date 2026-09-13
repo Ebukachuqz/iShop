@@ -15,6 +15,7 @@ class RuntimeSettings:
     allowed_origins: frozenset[str]
     sahara_api_key: str
     record_audio: bool
+    control_secret: str | None = None
 
     @classmethod
     def from_environment(cls) -> "RuntimeSettings":
@@ -41,7 +42,18 @@ class RuntimeSettings:
             raise ValueError("SAHARA_API_KEY is required for the active realtime speech profile")
 
         record_audio = os.getenv("RECORD_AUDIO_ENABLED", "false").strip().lower() == "true"
-        return cls(host, port, signing_secret, frozenset(origins), sahara_api_key, record_audio)
+        control_secret = os.getenv("RUNTIME_CONTROL_SECRET", "").strip() or None
+        if control_secret is not None and len(control_secret) < 32:
+            raise ValueError("RUNTIME_CONTROL_SECRET must contain at least 32 characters")
+        return cls(
+            host,
+            port,
+            signing_secret,
+            frozenset(origins),
+            sahara_api_key,
+            record_audio,
+            control_secret,
+        )
 
 
 def load_local_environment(path: Path) -> None:

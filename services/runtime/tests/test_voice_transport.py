@@ -244,6 +244,63 @@ def test_unavailable_reasoning_or_voice_profile_is_rejected(field, profile):
     assert sessions == []
 
 
+def test_revocation_control_rejects_unauthenticated_requests():
+    app, _ = app_with_capture()
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/revocations",
+            json={"profile_ids": ["sahara-stream-pcm"]},
+        )
+    assert response.status_code == 401
+
+
+def test_revoked_profile_rejects_future_sessions_without_fallback():
+    app, sessions = app_with_capture()
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/revocations",
+            headers={"authorization": f"Bearer {SECRET}"},
+            json={"profile_ids": ["sahara-stream-pcm"]},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"closed_sessions": 0}
+        with client.websocket_connect(
+            f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+        ) as socket:
+            socket.send_json({"type": "authenticate", "grant": signed_grant()})
+            try:
+                socket.receive_json()
+                raise AssertionError("Revoked profile remained available")
+            except Exception as exc:
+                assert getattr(exc, "code", None) == 4410
+    assert sessions == []
+
+
+def test_revocation_closes_active_session_and_cancels_provider():
+    app, sessions = app_with_capture()
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+        ) as socket:
+            socket.send_json({"type": "authenticate", "grant": signed_grant()})
+            assert socket.receive_json()["type"] == "authenticated"
+            socket.send_json({"type": "start_turn", "revision": 1})
+            assert socket.receive_json()["type"] == "session_started"
+            response = client.post(
+                "/internal/revocations",
+                headers={"authorization": f"Bearer {SECRET}"},
+                json={"config_revisions": ["config_1"]},
+            )
+            assert response.status_code == 200
+            assert response.json() == {"closed_sessions": 1}
+            try:
+                socket.receive_json()
+                raise AssertionError("Revoked active session remained connected")
+            except Exception as exc:
+                assert getattr(exc, "code", None) == 4410
+    assert sessions[0].canceled is True
+
+
 def test_provider_start_failure_is_truthful_and_non_authorizing():
     class FailingSession(FakeRealtimeSession):
         async def start(self):
