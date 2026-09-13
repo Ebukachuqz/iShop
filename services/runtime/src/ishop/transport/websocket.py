@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import json
+import logging
 import secrets
 import time
 from collections.abc import Callable
@@ -19,6 +20,8 @@ from ishop.domain.models import SessionGrant
 from ishop.speech.base import SpeechProviderError
 from ishop.speech.realtime import RealtimeSpeechSession, SpeechEventKind, SpeechStreamEvent
 from ishop.speech.sahara_stream import SaharaStreamingSession
+
+logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[..., RealtimeSpeechSession]
 ShoppingTurnHandler = Callable[[dict[str, Any], SessionGrant], Any]
@@ -269,6 +272,11 @@ def create_voice_app(
                         continue
                     try:
                         _validate_shopping_turn(payload, grant)
+                    except (TypeError, ValueError) as exc:
+                        logger.warning("Rejected shopping turn: %s", exc)
+                        await _send_error(websocket, "invalid_shopping_turn")
+                        continue
+                    try:
                         result = await shopping_turn_handler(payload, grant)
                         if not isinstance(result, dict):
                             raise ValueError("Shopping handler must return an object")
@@ -281,8 +289,9 @@ def create_voice_app(
                                 "request_revision": payload["request_revision"],
                             }
                         await websocket.send_json({"type": "shopping_result", **result})
-                    except (TypeError, ValueError):
-                        await _send_error(websocket, "invalid_shopping_turn")
+                    except Exception:
+                        logger.exception("Shopping turn handler failed")
+                        await _send_error(websocket, "shopping_runtime_failed")
                 elif action == "command_result":
                     command_id = payload.get("command_id")
                     result = payload.get("result")

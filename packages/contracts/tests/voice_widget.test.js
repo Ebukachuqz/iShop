@@ -129,4 +129,6 @@ test('widget renders untrusted shopper and store text without HTML insertion', (
   assert.match(widgetSource, /node\.textContent = text/);
   assert.match(widgetSource, /aria-live/);
   assert.match(widgetSource, /Microphone access failed\. Type your request instead\./);
+  assert.match(widgetSource, /shopping_runtime_failed/);
+  assert.match(widgetSource, /shopping service failed while processing/);
 });

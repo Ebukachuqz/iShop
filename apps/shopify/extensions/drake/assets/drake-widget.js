@@ -228,7 +228,13 @@
         this.addMessage("shopper", event.text || "");
         this.submitShoppingRequest(event.text || "");
       } else if (event.type === "error") {
-        this.setState("failed", { error: "I couldn’t process that. Please try again or type your request." });
+        const messages = {
+          invalid_shopping_turn: "I couldn’t validate the store information for that request.",
+          shopping_runtime_failed: "The shopping service failed while processing that request.",
+          provider_start_failed: "The speech service could not start. Please try again.",
+          provider_stream_failed: "The speech service did not finish transcribing. Please try again.",
+        };
+        this.setState("failed", { error: messages[event.error_code] || "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
         if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
         this.playTts(event.tts_audio_chunks);

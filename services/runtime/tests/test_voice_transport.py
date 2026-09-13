@@ -408,6 +408,25 @@ def test_shopping_turn_rejects_cross_tenant_evidence_before_handler():
     assert called == []
 
 
+def test_shopping_turn_reports_runtime_failure_separately_from_invalid_input():
+    async def handler(payload, grant):
+        raise RuntimeError("provider response could not be processed")
+
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        session_factory=lambda **kwargs: FakeRealtimeSession(**kwargs),
+        shopping_turn_handler=handler,
+    )
+    with TestClient(app).websocket_connect(
+        f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+    ) as socket:
+        socket.send_json({"type": "authenticate", "grant": signed_grant()})
+        socket.receive_json()
+        socket.send_json(shopping_turn_payload())
+        assert socket.receive_json()["error_code"] == "shopping_runtime_failed"
+
+
 def test_development_origin_parser_rejects_wildcard():
     assert development_allowed_origins("https://one.example, https://two.example/") == {
         "https://one.example",
