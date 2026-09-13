@@ -50,6 +50,7 @@ class ProductEvidence:
     title: str
     variants: tuple[VariantEvidence, ...]
     options: tuple[str, ...] = ()  # e.g. ("Color", "Size")
+    url: str | None = None
 
 
 @dataclass(frozen=True)

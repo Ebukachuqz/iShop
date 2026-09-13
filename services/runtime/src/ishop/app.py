@@ -56,6 +56,9 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             current_cart=current_cart,
         )
         response: dict[str, Any] = {
+            "turn_id": result.turn_id,
+            "request_revision": result.request_revision,
+            "page_epoch": result.page_epoch,
             "status": result.status,
             "spoken_response": result.spoken_response,
             "reason": result.reason,
@@ -163,6 +166,7 @@ def _evidence_from_browser(data: dict[str, Any]) -> EvidenceSnapshot:
             title=str(raw_product.get("title", "")),
             variants=variants,
             options=tuple(str(option) for option in raw_product.get("options", [])),
+            url=str(raw_product["url"]) if raw_product.get("url") else None,
         )
     return EvidenceSnapshot(
         snapshot_id=str(data["snapshot_id"]),

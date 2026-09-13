@@ -71,6 +71,8 @@
       this.capture = null;
       this.playback = voice ? new voice.AudioPlayback() : null;
       this.pendingTranscript = "";
+      this.pendingTurn = null;
+      this.pendingReceipts = new Map();
       this.open = false;
       this.render();
       this.bind();
@@ -238,7 +240,7 @@
         this.setState("failed", { error: messages[event.error_code] || "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
         if (event.status === "evidence_required" && event.evidence_query) {
-          this.retrieveCatalogEvidence(event.evidence_query);
+          this.retrieveCatalogEvidence(event.evidence_query, event.turn_id, event.request_revision);
           return;
         }
         if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
@@ -247,9 +249,23 @@
           this.setState("clarifying");
         } else if (event.authorized_command) {
           this.executeAuthorizedCommand(event.authorized_command);
-        } else if (event.status === "rejected" || event.status === "error") {
+        } else if (event.status === "error") {
           this.setState("failed", { error: event.spoken_response || "I couldn’t complete that request." });
+          this.pendingTurn = null;
+        } else {
+          this.setState("ready");
+          this.pendingTurn = null;
         }
+      } else if (event.type === "command_result_ack") {
+        const receipt = this.pendingReceipts.get(event.command_id);
+        this.pendingReceipts.delete(event.command_id);
+        if (event.verified && receipt) {
+          this.setState("completed", { verifiedReceipt: receipt });
+          this.addMessage("assistant", "Your cart is updated and verified.");
+        } else {
+          this.setState("failed", { error: "The cart result could not be verified." });
+        }
+        this.pendingTurn = null;
       } else if (event.type === "closed") {
         this.setState("reconnecting");
       }
@@ -296,21 +312,22 @@
       });
     }
 
-    async retrieveCatalogEvidence(query) {
+    async retrieveCatalogEvidence(query, turnId, requestRevision) {
       try {
+        if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
         this.setState("checking");
         const catalogResult = await this.catalog.search(query, 8);
         this.renderProducts(catalogResult.products);
         await this.submitShoppingRequest(this.pendingTranscript, {
           query,
           products: catalogResult.products,
-        });
+        }, this.pendingTurn);
       } catch (_) {
         this.setState("failed", { error: "I couldn’t search this store right now. Please try again." });
       }
     }
 
-    async submitShoppingRequest(text, catalogEvidence = null) {
+    async submitShoppingRequest(text, catalogEvidence = null, existingTurn = null) {
       if (!this.client || !this.bridge || !this.catalog) {
         this.setState("failed", { error: "Drake is not connected to this store yet. You can try again shortly." });
         return;
@@ -319,12 +336,19 @@
         this.pendingTranscript = text;
         this.setState("checking");
         const currentCart = await this.bridge.readAuthoritativeCart();
-        const requestRevision = Math.max(1, this.client.revision + 1);
-        this.client.revision = requestRevision;
+        const turn = existingTurn || {
+          turnId: `turn_${crypto.randomUUID().replaceAll("-", "")}`,
+          requestRevision: Math.max(1, this.client.revision + 1),
+          pageEpoch: 1,
+        };
+        if (!existingTurn) {
+          this.client.revision = turn.requestRevision;
+          this.pendingTurn = turn;
+        }
         this.client.sendShoppingTurn({
-          turn_id: `turn_${crypto.randomUUID().replaceAll("-", "")}`,
-          request_revision: requestRevision,
-          page_epoch: 1,
+          turn_id: turn.turnId,
+          request_revision: turn.requestRevision,
+          page_epoch: turn.pageEpoch,
           transcript: text,
           evidence: {
             snapshot_id: `browser_${Date.now()}`,
@@ -350,11 +374,13 @@
       this.setState("updating");
       try {
         const result = await this.bridge.executeCommand(command);
+        if (["verified_success", "verified_no_op", "human_handoff", "navigation_handoff"].includes(result.outcome)) {
+          this.pendingReceipts.set(command.command_id, result);
+        }
         this.client.sendCommandResult(command.command_id, result);
         if (result.outcome === "verified_success" || result.outcome === "verified_no_op") {
-          this.setState("completed", { verifiedReceipt: result });
-          this.addMessage("assistant", "Your cart is updated and verified.");
-        } else if (result.outcome === "human_handoff") {
+          this.setState("updating");
+        } else if (result.outcome === "human_handoff" || result.outcome === "navigation_handoff") {
           this.setState("completed", { verifiedReceipt: result });
         } else {
           this.setState("failed", { error: result.errors?.[0] || "The cart did not reach the requested state." });

@@ -86,6 +86,7 @@ class ControllerSessionState:
     latest_page_epoch: int = 0
     is_cancelled: bool = False
     cancelled_turns: set[str] = field(default_factory=set)
+    pending_intents: dict[tuple[str, int], ShoppingIntent] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,10 @@ class ShoppingController:
         sess.active_turn_id = turn_id
         sess.latest_request_revision = max(sess.latest_request_revision, request_revision)
         sess.latest_page_epoch = max(sess.latest_page_epoch, page_epoch)
+        pending_key = (turn_id, request_revision)
+        for key in tuple(sess.pending_intents):
+            if key != pending_key and key[1] < request_revision:
+                del sess.pending_intents[key]
 
         # 2. Prompt injection defence pre-check (T-09)
         for pat in INJECTION_PATTERNS:
@@ -241,52 +246,47 @@ class ShoppingController:
             request_revision=request_revision,
         )
 
-        # 4. LLM structured intent extraction with bounded retry (T-28)
-        intent_result: LlmInterpretationResult | None = None
-        attempts = 0
-        last_err: Exception | None = None
-
-        while attempts <= self.max_llm_retries:
-            attempts += 1
-            try:
-                intent_result = await self.llm_provider.interpret_intent(req)
-                break
-            except LlmProviderError as e:
-                last_err = e
-                if not e.retryable or attempts > self.max_llm_retries:
+        # 4. Interpret once, then retain the validated intent while read-only
+        # storefront evidence is fetched for this same turn.
+        intent = sess.pending_intents.get(pending_key) if evidence.query is not None else None
+        if intent is None:
+            intent_result: LlmInterpretationResult | None = None
+            attempts = 0
+            last_err: Exception | None = None
+            while attempts <= self.max_llm_retries:
+                attempts += 1
+                try:
+                    intent_result = await self.llm_provider.interpret_intent(req)
                     break
-            except Exception as e:
-                last_err = e
-                break
+                except LlmProviderError as e:
+                    last_err = e
+                    if not e.retryable or attempts > self.max_llm_retries:
+                        break
+                except Exception as e:
+                    last_err = e
+                    break
+            if not intent_result:
+                err_reason = str(last_err) if last_err else "Failed to parse structured intent"
+                return ControllerTurnResult(
+                    session_id=session_id, turn_id=turn_id,
+                    request_revision=request_revision, page_epoch=page_epoch,
+                    status="error",
+                    spoken_response="I had trouble processing that shopping request. Could you rephrase it?",
+                    reason=f"LLM interpretation failure: {err_reason}",
+                )
+            intent = intent_result.intent
 
-        if not intent_result:
-            err_reason = str(last_err) if last_err else "Failed to parse structured intent"
-            return ControllerTurnResult(
-                session_id=session_id,
-                turn_id=turn_id,
-                request_revision=request_revision,
-                page_epoch=page_epoch,
-                status="error",
-                spoken_response="I had trouble processing that shopping request. Could you rephrase it?",
-                reason=f"LLM interpretation failure: {err_reason}",
+            is_invalid, status, reason = self._check_turn_staleness(
+                session_id, turn_id, request_revision, page_epoch
             )
-
-        # Re-check staleness/cancellation after async LLM reasoning (R2, S-09)
-        is_invalid, status, reason = self._check_turn_staleness(
-            session_id, turn_id, request_revision, page_epoch
-        )
-        if is_invalid:
-            return ControllerTurnResult(
-                session_id=session_id,
-                turn_id=turn_id,
-                request_revision=request_revision,
-                page_epoch=page_epoch,
-                status=status,
-                spoken_response="This request was superseded by a newer turn or cancelled.",
-                reason=f"Aborted after async reasoning: {reason}",
-            )
-
-        intent = intent_result.intent
+            if is_invalid:
+                return ControllerTurnResult(
+                    session_id=session_id, turn_id=turn_id,
+                    request_revision=request_revision, page_epoch=page_epoch,
+                    status=status,
+                    spoken_response="This request was superseded by a newer turn or cancelled.",
+                    reason=f"Aborted after async reasoning: {reason}",
+                )
 
         if (
             intent.operation
@@ -304,6 +304,7 @@ class ShoppingController:
             and not evidence.products
             and evidence.query is None
         ):
+            sess.pending_intents[pending_key] = intent
             return ControllerTurnResult(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -315,6 +316,8 @@ class ShoppingController:
                 reason="Catalog evidence must be retrieved for the structured product query",
                 evidence_query=intent.product_query,
             )
+
+        sess.pending_intents.pop(pending_key, None)
 
         # 5. Dispatch based on extracted intent operation
         if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE):
@@ -352,6 +355,35 @@ class ShoppingController:
         elif intent.operation == IntentOperation.REQUEST_CHECKOUT:
             return self._handle_checkout(
                 session_id, turn_id, request_revision, page_epoch, intent, current_cart
+            )
+
+        elif intent.operation == IntentOperation.NAVIGATE:
+            matches = [p for p in evidence.products.values() if intent.product_query and product_title_matches(intent.product_query, p.title)]
+            if len(matches) != 1 or not matches[0].url:
+                return ControllerTurnResult(
+                    session_id=session_id, turn_id=turn_id,
+                    request_revision=request_revision, page_epoch=page_epoch,
+                    status="clarification_needed",
+                    spoken_response="Which product would you like me to open?",
+                    extracted_intent=intent,
+                    clarification_options=tuple(p.title for p in matches[:4]),
+                    reason="Navigation requires one verified Shopify product URL",
+                )
+            command = AuthorizedCommand(
+                command_id=f"cmd_{uuid.uuid4().hex}", session_id=session_id,
+                shop_id=current_cart.shop_id, turn_id=turn_id,
+                request_revision=request_revision, page_epoch=page_epoch,
+                expires_at_ms=now + 30_000,
+                operation=CommandOperation.NAVIGATE_STOREFRONT,
+                parameters={"url": matches[0].url},
+                expected_cart_fingerprint=current_cart.fingerprint(),
+            )
+            return ControllerTurnResult(
+                session_id=session_id, turn_id=turn_id,
+                request_revision=request_revision, page_epoch=page_epoch,
+                status="completed",
+                spoken_response=f"Opening {matches[0].title}.",
+                extracted_intent=intent, authorized_command=command,
             )
 
         else:

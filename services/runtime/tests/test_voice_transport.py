@@ -4,10 +4,10 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from ishop.domain.models import SessionGrant
+from ishop.domain.models import CartSnapshot, SessionGrant
 from ishop.speech.base import SpeechProviderError
 from ishop.speech.realtime import SpeechEventKind, SpeechStreamEvent
-from ishop.transport.websocket import create_voice_app, development_allowed_origins
+from ishop.transport.websocket import _verify_reported_cart_result, create_voice_app, development_allowed_origins
 
 SECRET = "voice_transport_test_signing_secret_123456"
 ORIGIN = "https://test.myshopify.com"
@@ -352,7 +352,13 @@ def test_shopping_turn_handler_is_tenant_bound_and_command_result_is_bound():
         return {
             "status": "completed",
             "spoken_response": "I found an option.",
-            "authorized_command": {"command_id": "cmd_1234567890123456"},
+            "authorized_command": {
+                "command_id": "cmd_1234567890123456",
+                "shop_id": SHOP,
+                "operation": "add_variant",
+                "expected_cart_fingerprint": CartSnapshot(SHOP, "NGN").fingerprint(),
+                "parameters": {"variant_id": "variant_1", "quantity": 1, "properties": {}, "selling_plan_id": None},
+            },
         }
 
     app = create_voice_app(
@@ -373,7 +379,11 @@ def test_shopping_turn_handler_is_tenant_bound_and_command_result_is_bound():
         socket.send_json({
             "type": "command_result",
             "command_id": "cmd_1234567890123456",
-            "result": {"outcome": "verified_success"},
+            "result": {
+                "outcome": "verified_success",
+                "before_cart": {"shop_id": SHOP, "currency": "NGN", "lines": []},
+                "after_cart": {"shop_id": SHOP, "currency": "NGN", "lines": [{"variant_id": "variant_1", "quantity": 1}]},
+            },
         })
         assert socket.receive_json() == {
             "type": "command_result_ack",
@@ -381,6 +391,22 @@ def test_shopping_turn_handler_is_tenant_bound_and_command_result_is_bound():
             "verified": True,
             "request_revision": 1,
         }
+
+
+def test_command_result_label_cannot_override_wrong_cart_state():
+    before = CartSnapshot(SHOP, "NGN")
+    command = {
+        "shop_id": SHOP,
+        "operation": "add_variant",
+        "expected_cart_fingerprint": before.fingerprint(),
+        "parameters": {"variant_id": "variant_1", "quantity": 1, "properties": {}},
+    }
+    result = {
+        "outcome": "verified_success",
+        "before_cart": before.to_dict(),
+        "after_cart": {"shop_id": SHOP, "currency": "NGN", "lines": []},
+    }
+    assert _verify_reported_cart_result(command, result) is False
 
 
 def test_shopping_turn_rejects_cross_tenant_evidence_before_handler():

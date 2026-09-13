@@ -48,6 +48,16 @@ export class StorefrontBridge {
   async executeCommand(command) {
     const beforeCart = await this.readAuthoritativeCart();
 
+    if (command.operation === 'navigate_storefront') {
+      const destination = new URL(command.parameters?.url || '/', this.origin);
+      const trustedPath = destination.pathname.startsWith('/products/') || destination.pathname.startsWith('/collections/');
+      if (destination.origin !== this.origin || !trustedPath) {
+        return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Navigation destination is not a trusted Shopify product or collection path'], before_cart: beforeCart, after_cart: beforeCart };
+      }
+      this.navigate(destination.toString());
+      return { ok: true, outcome: 'navigation_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };
+    }
+
     if (command.operation === 'handoff_to_checkout') {
       if (!beforeCart.lines.length) {
         return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Checkout handoff requires a non-empty cart'], before_cart: beforeCart, after_cart: beforeCart };

@@ -13,6 +13,23 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
     assert.equal(cart.shop_id, 'trusted-shop.myshopify.com');
   });
 
+  test('navigation accepts only same-origin Shopify product and collection paths', async () => {
+    const navigated = [];
+    const cart = { shop_id: 'store.myshopify.com', currency: 'USD', lines: [] };
+    const bridge = new StorefrontBridge({
+      ajaxAdapter: { readCart: async () => cart },
+      webMcpAdapter: { isAvailable: () => false },
+      actionsAdapter: { isAvailable: () => false },
+      origin: 'https://store.myshopify.com',
+      navigate: (url) => navigated.push(url),
+    });
+    const accepted = await bridge.executeCommand({ operation: 'navigate_storefront', parameters: { url: '/products/snowboard' } });
+    const rejected = await bridge.executeCommand({ operation: 'navigate_storefront', parameters: { url: 'https://example.com/products/snowboard' } });
+    assert.equal(accepted.outcome, 'navigation_handoff');
+    assert.equal(rejected.outcome, 'rejected');
+    assert.deepEqual(navigated, ['https://store.myshopify.com/products/snowboard']);
+  });
+
   test('T-16: WebMCP, Standard Actions, and Ajax adapters produce equivalent canonical carts', () => {
     // 1. Raw Ajax API response
     const ajaxRaw = {

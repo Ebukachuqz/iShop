@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, model_validator
 
-from ishop.domain.models import SessionGrant
+from ishop.domain.models import CartLine, CartSnapshot, SessionGrant
 from ishop.speech.base import SpeechProviderError
 from ishop.speech.realtime import RealtimeSpeechSession, SpeechEventKind, SpeechStreamEvent
 from ishop.speech.sahara_stream import SaharaStreamingSession
@@ -287,6 +287,7 @@ def create_voice_app(
                             pending_commands[str(command["command_id"])] = {
                                 "turn_id": payload["turn_id"],
                                 "request_revision": payload["request_revision"],
+                                "command": command,
                             }
                         await websocket.send_json({"type": "shopping_result", **result})
                     except Exception:
@@ -299,8 +300,7 @@ def create_voice_app(
                     if not pending or not isinstance(result, dict):
                         await _send_error(websocket, "unexpected_command_result")
                         continue
-                    outcome = str(result.get("outcome", ""))
-                    verified = outcome in {"verified_success", "verified_no_op"}
+                    verified = _verify_reported_cart_result(pending["command"], result)
                     await websocket.send_json({
                         "type": "command_result_ack",
                         "command_id": command_id,
@@ -391,6 +391,63 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
             raise ValueError(f"Invalid {field_name}")
         if payload[field_name].get("shop_id") != grant.shop_id:
             raise ValueError(f"{field_name} shop mismatch")
+
+
+def _verify_reported_cart_result(command: dict[str, Any], result: dict[str, Any]) -> bool:
+    try:
+        before = CartSnapshot.from_dict(result["before_cart"])
+        after = CartSnapshot.from_dict(result["after_cart"])
+        if before.shop_id != command["shop_id"] or after.shop_id != command["shop_id"]:
+            return False
+        if before.currency != after.currency or before.fingerprint() != command["expected_cart_fingerprint"]:
+            return False
+        params = command["parameters"]
+        operation = command["operation"]
+        expected_outcomes = {
+            "navigate_storefront": "navigation_handoff",
+            "handoff_to_checkout": "human_handoff",
+        }
+        if operation in expected_outcomes:
+            return result.get("outcome") == expected_outcomes[operation] and after.is_equivalent(before)
+        if result.get("outcome") not in {"verified_success", "verified_no_op"}:
+            return False
+        target_key = params.get("target_line_key")
+        variant_id = str(params.get("variant_id", ""))
+        quantity = int(params.get("quantity", 0))
+        lines = list(before.lines)
+
+        def matches(line: CartLine) -> bool:
+            if target_key:
+                return line.shopify_line_key == target_key or line.canonical_key == target_key
+            return bool(variant_id and line.variant_id == variant_id)
+
+        if operation == "remove_line":
+            lines = [line for line in lines if not matches(line)]
+        elif operation == "set_line_quantity":
+            lines = [
+                CartLine(
+                    variant_id=line.variant_id,
+                    quantity=quantity,
+                    selling_plan_id=line.selling_plan_id,
+                    properties=line.properties,
+                    shopify_line_key=line.shopify_line_key,
+                ) if matches(line) else line
+                for line in lines
+                if not (matches(line) and quantity == 0)
+            ]
+        elif operation == "add_variant":
+            lines.append(CartLine(
+                variant_id=variant_id,
+                quantity=quantity,
+                selling_plan_id=params.get("selling_plan_id"),
+                properties=params.get("properties") or {},
+            ))
+        else:
+            return False
+        expected = CartSnapshot(shop_id=before.shop_id, currency=before.currency, lines=tuple(lines))
+        return after.is_equivalent(expected)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _event_payload(event: SpeechStreamEvent) -> dict[str, Any]:
