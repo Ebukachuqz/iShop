@@ -231,4 +231,56 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
     assert.equal(receipt.ok, false);
     assert.equal(receipt.outcome, 'failed_with_observed_change');
   });
+
+  test('rejects an expired command before reading or mutating the cart', async () => {
+    let reads = 0;
+    const bridge = new StorefrontBridge({
+      ajaxAdapter: { readCart: async () => { reads += 1; return { shop_id: 'store.myshopify.com', currency: 'USD', lines: [] }; } },
+      webMcpAdapter: { isAvailable: () => false },
+      actionsAdapter: { isAvailable: () => false },
+    });
+    const receipt = await bridge.executeCommand({
+      schema_version: '1.0.0',
+      command_id: 'cmd_expired_00000001',
+      session_id: 'sess_test_00000001',
+      shop_id: 'store.myshopify.com',
+      turn_id: 'turn-expired',
+      request_revision: 1,
+      page_epoch: 1,
+      expires_at_ms: Date.now() - 1,
+      expected_cart_fingerprint: null,
+      operation: 'add_variant',
+      parameters: { variant_id: 'var_123', quantity: 1 },
+    });
+    assert.equal(receipt.outcome, 'rejected');
+    assert.equal(reads, 0);
+  });
+
+  test('rejects a changed cart before dispatch when a fingerprint precondition is present', async () => {
+    let writes = 0;
+    const bridge = new StorefrontBridge({
+      ajaxAdapter: {
+        readCart: async () => ({ shop_id: 'store.myshopify.com', currency: 'USD', lines: [{ variant_id: 'changed', quantity: 1 }] }),
+        addVariant: async () => { writes += 1; return { ok: true, errors: [] }; },
+      },
+      webMcpAdapter: { isAvailable: () => false },
+      actionsAdapter: { isAvailable: () => false },
+    });
+    const receipt = await bridge.executeCommand({
+      schema_version: '1.0.0',
+      command_id: 'cmd_changed_00000001',
+      session_id: 'sess_test_00000001',
+      shop_id: 'store.myshopify.com',
+      turn_id: 'turn-changed',
+      request_revision: 1,
+      page_epoch: 1,
+      expires_at_ms: Date.now() + 60_000,
+      expected_cart_fingerprint: 'stale-fingerprint',
+      operation: 'add_variant',
+      parameters: { variant_id: 'var_123', quantity: 1 },
+    });
+    assert.equal(receipt.outcome, 'rejected');
+    assert.equal(writes, 0);
+    assert.match(receipt.errors[0], /changed before dispatch/i);
+  });
 });

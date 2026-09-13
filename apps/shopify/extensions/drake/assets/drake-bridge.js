@@ -10,7 +10,7 @@
 import { AjaxCartAdapter } from './drake-ajax.js';
 import { StandardActionsAdapter } from './drake-standard-actions.js';
 import { WebMcpAdapter } from './drake-webmcp.js';
-import { computeExpectedCart, isCartEquivalent } from './drake-browser-contracts.js';
+import { computeExpectedCart, isCartEquivalent, validateCommandSafety } from './drake-browser-contracts.js';
 
 export { AjaxCartAdapter, StandardActionsAdapter, WebMcpAdapter };
 
@@ -46,7 +46,23 @@ export class StorefrontBridge {
   }
 
   async executeCommand(command) {
+    // Runtime-minted commands carry the schema envelope. Keep the adapter
+    // usable with legacy simulator fixtures while the WebSocket boundary
+    // remains the strict command validator.
+    const safetyErrors = command?.schema_version ? validateCommandSafety(command) : [];
+    if (safetyErrors.length) {
+      return { ok: false, outcome: 'rejected', transport_used: 'ajax_cart', errors: safetyErrors };
+    }
+    if (Number.isFinite(command.expires_at_ms) && Date.now() > command.expires_at_ms) {
+      return { ok: false, outcome: 'rejected', transport_used: 'ajax_cart', errors: ['Command expired before dispatch (S-09)'] };
+    }
     const beforeCart = await this.readAuthoritativeCart();
+    if (command.expected_cart_fingerprint) {
+      const actualFingerprint = await this._fingerprintCart(beforeCart);
+      if (actualFingerprint !== command.expected_cart_fingerprint) {
+        return { ok: false, outcome: 'rejected', transport_used: 'ajax_cart', errors: ['Cart changed before dispatch; refresh required (S-09)'], before_cart: beforeCart, after_cart: beforeCart };
+      }
+    }
 
     if (command.operation === 'navigate_storefront') {
       const destination = new URL(command.parameters?.url || '/', this.origin);
@@ -134,6 +150,21 @@ export class StorefrontBridge {
       before_cart: beforeCart,
       after_cart: afterCart,
     };
+  }
+
+  async _fingerprintCart(cart) {
+    const canonical = (cart.lines || []).map((line) => ({
+      variant_id: String(line.variant_id || ''),
+      quantity: Number(line.quantity || 0),
+      selling_plan_id: line.selling_plan_id || null,
+      properties: Object.fromEntries(Object.entries(line.properties || {}).sort()),
+    })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const payload = JSON.stringify({ shop_id: cart.shop_id, currency: cart.currency, lines: canonical });
+    if (globalThis.crypto?.subtle) {
+      const bytes = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
+      return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    }
+    return payload;
   }
 
   async _dispatchWebMcp(command) {

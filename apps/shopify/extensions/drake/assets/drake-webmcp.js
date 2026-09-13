@@ -43,7 +43,7 @@ export class WebMcpAdapter {
 
     const rawResult = await this.modelContext.executeTool(descriptor, JSON.stringify({}));
     const parsed = typeof rawResult === 'string' ? JSON.parse(rawResult) : rawResult;
-    return this.normalizeCart(parsed);
+    return this.normalizeCart(this.unwrapPayload(parsed));
   }
 
   async updateCart(params) {
@@ -54,8 +54,9 @@ export class WebMcpAdapter {
 
     const rawResult = await this.modelContext.executeTool(descriptor, JSON.stringify(params));
     const parsed = typeof rawResult === 'string' ? JSON.parse(rawResult) : rawResult;
+    const payload = this.unwrapPayload(parsed);
 
-    const userErrors = parsed?.userErrors || [];
+    const userErrors = payload?.userErrors || payload?.errors || [];
     if (userErrors.length > 0) {
       return {
         ok: false,
@@ -66,12 +67,14 @@ export class WebMcpAdapter {
     return {
       ok: true,
       errors: [],
-      cart: parsed?.cart ? this.normalizeCart(parsed.cart) : null,
+      cart: payload?.cart ? this.normalizeCart(this.unwrapPayload(payload.cart)) : null,
     };
   }
 
   normalizeCart(data) {
-    const rawLines = data?.lines || data?.items || [];
+    if (!data || typeof data !== 'object') throw new Error('WebMCP cart response is not an object');
+    const rawLines = data?.lines || data?.items;
+    if (!Array.isArray(rawLines)) throw new Error('WebMCP cart response has no recognized lines');
     const lines = rawLines.map((l) => {
       const normProps = {};
       const attrs = l.attributes || l.properties || [];
@@ -99,5 +102,21 @@ export class WebMcpAdapter {
       currency: data?.currency || 'USD',
       lines: lines,
     };
+  }
+
+  unwrapPayload(value) {
+    let current = value;
+    for (let index = 0; index < 4; index += 1) {
+      if (current && typeof current === 'object' && current.structuredContent && typeof current.structuredContent === 'object') {
+        current = current.structuredContent;
+        continue;
+      }
+      if (current && typeof current === 'object' && current.data && typeof current.data === 'object' && !current.lines && !current.items && !current.cart) {
+        current = current.data;
+        continue;
+      }
+      break;
+    }
+    return current;
   }
 }

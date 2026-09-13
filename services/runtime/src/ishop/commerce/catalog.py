@@ -9,6 +9,7 @@ Enforces Safety invariants:
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping
@@ -66,10 +67,39 @@ class EvidenceSnapshot:
 
 
 def product_title_matches(query: str, title: str) -> bool:
+    """Match spoken/punctuated product names without choosing a similar item.
+
+    This is intentionally a candidate matcher, not authorization. It tolerates
+    case, punctuation, hyphens and joined compounds such as ``multilocation`` /
+    ``multi-location`` while leaving final product/variant resolution to the
+    evidence-bound resolver.
+    """
     ignored = {"a", "an", "the"}
-    query_tokens = {token for token in re.findall(r"[a-z0-9]+", query.lower()) if token not in ignored}
-    title_tokens = {token for token in re.findall(r"[a-z0-9]+", title.lower()) if token not in ignored}
-    return bool(query_tokens and title_tokens and (query_tokens <= title_tokens or title_tokens <= query_tokens))
+
+    def tokens(value: str) -> list[str]:
+        folded = unicodedata.normalize("NFKC", value).casefold()
+        return [token for token in re.findall(r"[\w]+", folded, flags=re.UNICODE) if token not in ignored]
+
+    query_tokens = tokens(query)
+    title_tokens = tokens(title)
+    if not query_tokens or not title_tokens:
+        return False
+
+    def covers(smaller: list[str], larger: list[str]) -> bool:
+        # Every requested token must either occur directly or be a joined
+        # compound of adjacent title tokens. This handles ``multi location``
+        # and ``multilocation`` in both directions without fuzzy substitution.
+        for token in smaller:
+            if token in larger:
+                continue
+            if any("".join(larger[index:index + width]) == token
+                   for width in range(2, min(4, len(larger) - 0) + 1)
+                   for index in range(0, len(larger) - width + 1)):
+                continue
+            return False
+        return True
+
+    return covers(query_tokens, title_tokens) or covers(title_tokens, query_tokens)
 
 
 @dataclass(frozen=True)
