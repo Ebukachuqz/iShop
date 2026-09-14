@@ -661,6 +661,45 @@ def test_delayed_or_failed_tts_does_not_block_text_shopping_result():
         assert res["result_product_ids"] == ["1", "2"]
 
 
+def test_slow_tts_does_not_block_the_next_shopping_turn():
+    """The receive loop remains available while an earlier response is being synthesized."""
+    async def turn_handler(payload: dict[str, Any], grant: SessionGrant) -> dict[str, Any]:
+        return {
+            "turn_id": payload["turn_id"],
+            "request_revision": payload["request_revision"],
+            "page_epoch": payload["page_epoch"],
+            "status": "completed",
+            "spoken_response": f"Response {payload['request_revision']}",
+        }
+
+    async def slow_tts_handler(text: str, revision: int):
+        if revision == 1:
+            await asyncio.sleep(60)
+        return []
+
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        shopping_turn_handler=turn_handler,
+        shopping_tts_handler=slow_tts_handler,
+    )
+
+    with TestClient(app).websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as ws:
+        ws.send_json({"type": "authenticate", "grant": make_signed_grant()})
+        ws.receive_json()
+        for revision in (1, 2):
+            ws.send_json({
+                "type": "shopping_turn",
+                "turn_id": f"turn_tts_{revision}",
+                "request_revision": revision,
+                "page_epoch": 1,
+                "transcript": "Find snowboards",
+            })
+            result = ws.receive_json()
+            assert result["type"] == "shopping_result"
+            assert result["request_revision"] == revision
+
+
 # ============================================================================
 # 7. Single accepted final, duplicate suppression, stale revision, barge-in, and turn cancellation
 # ============================================================================

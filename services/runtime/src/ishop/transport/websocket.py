@@ -156,6 +156,30 @@ def create_voice_app(
         revision: int | None = None
         grant: SessionGrant | None = None
         pending_commands: dict[str, dict[str, Any]] = {}
+        tts_tasks: set[asyncio.Task[None]] = set()
+
+        async def deliver_tts(result: dict[str, Any], payload: dict[str, Any]) -> None:
+            try:
+                chunks = await shopping_tts_handler(  # type: ignore[misc]
+                    str(result["spoken_response"]),
+                    int(payload["request_revision"]),
+                )
+                if chunks:
+                    await websocket.send_json({
+                        "type": "shopping_tts",
+                        "turn_id": payload["turn_id"],
+                        "request_revision": payload["request_revision"],
+                        "page_epoch": payload["page_epoch"],
+                        "tts_audio_chunks": chunks,
+                    })
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("TTS synthesis failed or timed out; text result delivered safely", exc_info=True)
+
+        def cancel_pending_tts() -> None:
+            for task in tuple(tts_tasks):
+                task.cancel()
         try:
             first = await websocket.receive_json()
             try:
@@ -209,6 +233,7 @@ def create_voice_app(
                     continue
                 action = payload.get("type")
                 if action == "start_turn":
+                    cancel_pending_tts()
                     requested_revision = payload.get("revision")
                     if not isinstance(requested_revision, int) or requested_revision < 1:
                         await _send_error(websocket, "invalid_revision")
@@ -270,6 +295,7 @@ def create_voice_app(
                         await session.cancel()
                     session = None
                 elif action == "cancel_turn":
+                    cancel_pending_tts()
                     if session is not None:
                         await session.cancel()
                         session = None
@@ -305,18 +331,9 @@ def create_voice_app(
                                     logger.exception("Failed to persist authorized command")
                         await websocket.send_json({"type": "shopping_result", **result})
                         if shopping_tts_handler is not None and result.get("spoken_response"):
-                            try:
-                                chunks = await shopping_tts_handler(str(result["spoken_response"]), int(payload["request_revision"]))
-                                if chunks:
-                                    await websocket.send_json({
-                                        "type": "shopping_tts",
-                                        "turn_id": payload["turn_id"],
-                                        "request_revision": payload["request_revision"],
-                                        "page_epoch": payload["page_epoch"],
-                                        "tts_audio_chunks": chunks,
-                                    })
-                            except Exception:
-                                logger.warning("TTS synthesis failed or timed out; text result delivered safely", exc_info=True)
+                            task = asyncio.create_task(deliver_tts(result, payload))
+                            tts_tasks.add(task)
+                            task.add_done_callback(tts_tasks.discard)
                     except Exception:
                         logger.exception("Shopping turn handler failed")
                         await _send_error(websocket, "shopping_runtime_failed")
@@ -360,6 +377,9 @@ def create_voice_app(
         except (WebSocketDisconnect, ValueError, TypeError):
             pass
         finally:
+            cancel_pending_tts()
+            if tts_tasks:
+                await asyncio.gather(*tts_tasks, return_exceptions=True)
             if session is not None:
                 await session.cancel()
             if grant is not None:
