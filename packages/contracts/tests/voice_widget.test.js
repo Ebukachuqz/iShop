@@ -11,11 +11,24 @@ const widgetSource = readFileSync(join(here, '..', '..', '..', 'apps', 'shopify'
 
 function loadVoice() {
   const window = {};
+  class FakeAudio {
+    constructor(src) {
+      this.src = src;
+      this.onended = null;
+      this.onerror = null;
+    }
+    play() { return Promise.resolve(); }
+    pause() {}
+  }
+  const MockURL = function (url, base) { return new URL(url, base); };
+  MockURL.createObjectURL = () => 'blob:mock';
+  MockURL.revokeObjectURL = () => {};
   vm.runInNewContext(source, {
     window,
     document: { getElementById: () => null },
-    URL,
+    URL: MockURL,
     Blob,
+    Audio: FakeAudio,
     AudioBuffer: undefined,
   });
   return window.IShopVoiceSession;
@@ -159,4 +172,87 @@ test('widget uses decision-first ingress before collecting store context', () =>
   const contextGate = widgetSource.indexOf('if (includeStoreContext) {');
   const cartRead = widgetSource.indexOf('await this.bridge.readAuthoritativeCart()', contextGate);
   assert.ok(contextGate >= 0 && cartRead > contextGate);
+});
+
+test('audio playback interrupts previous generation and rejects obsolete chunks', () => {
+  const voice = loadVoice();
+  const playback = new voice.AudioPlayback();
+  assert.equal(playback.generation, 0);
+
+  const chunk1 = { generation: 0, audio: new Uint8Array(16).buffer, format: 'wav' };
+  assert.equal(playback.enqueue(chunk1), true);
+
+  playback.interrupt();
+  assert.equal(playback.generation, 1);
+  assert.equal(playback.queue.length, 0);
+
+  const staleChunk = { generation: 0, audio: new Uint8Array(16).buffer, format: 'wav' };
+  assert.equal(playback.enqueue(staleChunk), false);
+
+  const freshChunk = { generation: 1, audio: new Uint8Array(16).buffer, format: 'wav' };
+  assert.equal(playback.enqueue(freshChunk), true);
+});
+
+test('voice client drops events with stale revisions and duplicate finals', async () => {
+  const voice = loadVoice();
+  const events = [];
+  class FakeWebSocket {
+    constructor() {
+      this.readyState = 0;
+      this.sent = [];
+      queueMicrotask(() => { this.readyState = 1; if (this.onopen) this.onopen(); });
+    }
+    send(data) { this.sent.push(data); }
+    close() { this.readyState = 3; if (this.onclose) this.onclose(); }
+  }
+  const client = new voice.VoiceSessionClient({
+    url: 'wss://runtime.example/ws/voice/shop.myshopify.com',
+    grant: { grant_id: 'grant_1' },
+    WebSocket: FakeWebSocket,
+    onEvent: (event) => events.push(event),
+  });
+
+  await client.startTurn({ revision: 2 });
+  // Event from revision 1 (stale) must be dropped
+  client._receive(JSON.stringify({ type: 'partial_transcript', revision: 1, text: 'old turn' }));
+  assert.equal(events.length, 0);
+
+  // Event from revision 2 (current) must be accepted
+  client._receive(JSON.stringify({ type: 'partial_transcript', revision: 2, text: 'current turn' }));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].text, 'current turn');
+
+  // First final for revision 2 accepted
+  client._receive(JSON.stringify({ type: 'final_transcript', revision: 2, text: 'final text' }));
+  assert.equal(events.filter((e) => e.type === 'final_transcript').length, 1);
+
+  // Duplicate final for revision 2 dropped
+  client._receive(JSON.stringify({ type: 'final_transcript', revision: 2, text: 'duplicate final' }));
+  assert.equal(events.filter((e) => e.type === 'final_transcript').length, 1);
+});
+
+test('voice client cancelTurn sends cancellation and notifies event handler', async () => {
+  const voice = loadVoice();
+  const events = [];
+  let sentData = [];
+  class FakeWebSocket {
+    constructor() {
+      this.readyState = 0;
+      this.sent = sentData;
+      queueMicrotask(() => { this.readyState = 1; if (this.onopen) this.onopen(); });
+    }
+    send(data) { this.sent.push(data); }
+    close() { this.readyState = 3; if (this.onclose) this.onclose(); }
+  }
+  const client = new voice.VoiceSessionClient({
+    url: 'wss://runtime.example/ws/voice/shop.myshopify.com',
+    grant: { grant_id: 'grant_1' },
+    WebSocket: FakeWebSocket,
+    onEvent: (event) => events.push(event),
+  });
+
+  await client.startTurn({ revision: 3 });
+  client.cancelTurn();
+  assert.equal(sentData.some((d) => d.includes('cancel_turn')), true);
+  assert.equal(events.some((e) => e.type === 'turn_canceled' && e.revision === 3), true);
 });
