@@ -122,6 +122,7 @@ test('widget state distinguishes listening, interpretation, failure, and verifie
     state.transition('completed', { verifiedReceipt: { command_id: 'command_1' } }).name,
     'completed',
   );
+  assert.equal(state.transition('failed', { suppressError: true, error: 'Already shown in chat' }).error, '');
 });
 
 test('candidate references remain stable and reject unknown ordinals', () => {

@@ -30,6 +30,10 @@ Return exactly one JSON TurnDecision envelope. The allowed shapes are:
 - clarify: {"mode":"clarify","clarification_question":"...","clarification_options":[],"clarification_fields":[],"intent":null-or-ShoppingIntent}
 - act: {"mode":"act","intent":ShoppingIntent,"target_reference":null-or-TargetReference}
 
+TargetReference is an optional typed reference with this exact shape:
+{"kind":"search_query|observed_product|result_position|current_page|cart_line|collection|comparison_selection","value":"string","result_set_id":null-or-string,"position":null-or-integer,"handle":null-or-string,"url":null-or-string}
+Use `result_position` for phrases such as "the second one", `current_page` for "this product", and `observed_product` for a named or already observed product. Never put a product ID into a free-text search query.
+
 For act mode, the nested intent must conform to the ShoppingIntent schema below. Do not return a bare ShoppingIntent.
 """
 
@@ -103,6 +107,7 @@ def format_intent_user_prompt(
     cart_summary: str | None = None,
     current_product: str | None = None,
     currency: str = "NGN",
+    validation_feedback: str | None = None,
 ) -> str:
     parts: list[str] = [
         f"Shopper speech: \"{transcript}\"",
@@ -121,6 +126,8 @@ def format_intent_user_prompt(
         parts.append(f"Available catalog items:\n{items}")
     if cart_summary:
         parts.append(f"Current cart:\n{cart_summary}")
+    if validation_feedback:
+        parts.append(f"Your previous JSON was invalid. Correct only these validation problems:\n{validation_feedback[:800]}")
 
     parts.append("\nReturn the shopper's TurnDecision envelope as valid JSON now:")
     return "\n".join(parts)

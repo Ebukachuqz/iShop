@@ -91,6 +91,7 @@ class LlmIntentRequest:
     budget_currency: str = "NGN"
     turn_id: str = ""
     request_revision: int = 1
+    validation_feedback: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,7 @@ class LlmToolSelectionRequest:
     resolved_context: Mapping[str, Any] = field(default_factory=dict)
     turn_id: str = ""
     request_revision: int = 1
+    validation_feedback: str | None = None
 
 
 @dataclass(frozen=True)

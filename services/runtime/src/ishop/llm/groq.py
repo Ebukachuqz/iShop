@@ -108,6 +108,7 @@ class GroqLlmProvider(LlmProvider):
             cart_summary=request.cart_summary,
             current_product=request.current_product_id,
             currency=request.budget_currency,
+            validation_feedback=request.validation_feedback,
         )
 
         payload = {
@@ -202,6 +203,8 @@ class GroqLlmProvider(LlmProvider):
             f"Resolved context: {json.dumps(dict(request.resolved_context))}\n"
             f"Qualified tools: {tools_json}"
         )
+        if request.validation_feedback:
+            prompt += f"\nYour previous proposal was invalid. Correct these problems: {request.validation_feedback[:800]}"
         payload = {
             "model": self._model_name,
             "messages": [

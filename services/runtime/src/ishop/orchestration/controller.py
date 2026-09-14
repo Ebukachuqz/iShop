@@ -49,6 +49,7 @@ from ishop.domain.intent import (
     DecisionMode,
     IntentOperation,
     QuantityChange,
+    ReferenceKind,
     ResponsePurpose,
     ShoppingIntent,
     TurnDecision,
@@ -194,6 +195,7 @@ class ControllerTurnResult:
     selected_tool: str | None = None
     result_set_id: str | None = None
     tool_request: dict[str, Any] | None = None
+    failure_code: str | None = None
 
 
 class ShoppingController:
@@ -226,6 +228,16 @@ class ShoppingController:
     def restore_session_state(self, data: dict[str, Any]) -> None:
         restored = ControllerSessionState.from_dict(data)
         self._sessions[restored.session_id] = restored
+
+    def record_assistant_outcome(self, session_id: str, result: ControllerTurnResult) -> None:
+        """Persist visible assistant meaning once, excluding silent continuation envelopes."""
+        if not result.spoken_response or result.status in {"context_required", "evidence_required", "tool_required"}:
+            return
+        sess = self.get_session_state(session_id)
+        entry = {"role": "assistant", "content": result.spoken_response.strip()[:1000]}
+        if not sess.conversation_history or sess.conversation_history[-1] != entry:
+            sess.conversation_history.append(entry)
+            sess.conversation_history = sess.conversation_history[-8:]
 
     def cancel_turn(self, session_id: str, turn_id: str) -> None:
         """Cancel an in-flight or pending turn (R2, S-09)."""
@@ -380,26 +392,54 @@ class ShoppingController:
         if intent is None:
             attempts = 0
             last_err: Exception | None = None
+            failure_code = "interpretation_failed"
+            attempt_request = req
             while attempts <= self.max_llm_retries:
                 attempts += 1
                 try:
-                    intent_result = await self.llm_provider.interpret_intent(req)
+                    intent_result = await self.llm_provider.interpret_intent(attempt_request)
                     break
                 except LlmProviderError as e:
                     last_err = e
+                    if e.status_code == 429:
+                        failure_code = "reasoning_rate_limited"
+                        break
+                    if e.status_code is not None:
+                        failure_code = "reasoning_provider_error"
+                    elif "parse or validate" in str(e).casefold() or "turndecision" in str(e).casefold():
+                        failure_code = "invalid_decision"
+                        attempt_request = replace(attempt_request, validation_feedback=str(e))
+                    else:
+                        failure_code = "reasoning_unavailable"
                     if not e.retryable or attempts > self.max_llm_retries:
                         break
                 except Exception as e:
                     last_err = e
+                    failure_code = "invalid_decision"
                     break
             if not intent_result:
                 err_reason = str(last_err) if last_err else "Failed to parse structured intent"
+                logger.warning(
+                    "Shopping interpretation failed code=%s profile=%s turn=%s revision=%s detail=%s",
+                    failure_code,
+                    self.llm_provider.profile.profile_id,
+                    turn_id,
+                    request_revision,
+                    err_reason[:500],
+                )
+                shopper_message = {
+                    "reasoning_rate_limited": "I’m receiving too many requests right now. Please wait a moment and try again.",
+                    "reasoning_provider_error": "My reasoning service is temporarily unavailable. Please try again shortly.",
+                    "reasoning_unavailable": "My reasoning service is temporarily unavailable. Please try again shortly.",
+                    "invalid_decision": "I couldn’t interpret that request reliably. Please try saying it another way.",
+                }.get(failure_code, "I couldn’t process that request right now. Please try again.")
                 return ControllerTurnResult(
                     session_id=session_id, turn_id=turn_id,
                     request_revision=request_revision, page_epoch=page_epoch,
                     status="error",
-                    spoken_response="I had trouble processing that shopping request. Could you rephrase it?",
-                    reason=f"LLM interpretation failure: {err_reason}",
+                    spoken_response=shopper_message,
+                    reason=f"LLM interpretation failure ({failure_code})",
+                    failure_code=failure_code,
                 )
 
             intent = intent_result.intent
@@ -418,6 +458,9 @@ class ShoppingController:
 
         decision = intent_result.get_decision() if intent_result else None
         if decision is not None:
+            if intent is not None and decision.target_reference is not None and intent.target_reference is None:
+                intent = replace(intent, target_reference=decision.target_reference)
+                decision = replace(decision, intent=intent)
             if decision.mode == DecisionMode.RESPOND:
                 is_refusal = bool(decision.response_purpose and decision.response_purpose == ResponsePurpose.REFUSAL)
                 return ControllerTurnResult(
@@ -469,6 +512,33 @@ class ShoppingController:
             )
 
         lower_transcript = transcript.casefold()
+
+        # Resolve provider-proposed typed references from trusted session/page state.
+        # The model proposes the reference kind; deterministic state owns identity.
+        if intent.target_reference is not None:
+            target_ref = intent.target_reference
+            if target_ref.kind == ReferenceKind.CURRENT_PAGE:
+                trusted_page_product = current_product_id or (page_context or {}).get("product_id")
+                if trusted_page_product:
+                    intent = replace(intent, product_query=str(trusted_page_product))
+            elif target_ref.kind == ReferenceKind.RESULT_POSITION and target_ref.position is not None:
+                position = target_ref.position
+                result_ids = sess.active_search_product_ids
+                if target_ref.result_set_id:
+                    snapshot = sess.result_sets.get(target_ref.result_set_id, {})
+                    result_ids = tuple(str(value) for value in snapshot.get("product_ids", []))
+                if 1 <= position <= len(result_ids):
+                    intent = replace(intent, product_query=result_ids[position - 1])
+            elif target_ref.kind == ReferenceKind.OBSERVED_PRODUCT and target_ref.value:
+                observed_id = next(
+                    (
+                        product.product_id for product in evidence.products.values()
+                        if product.product_id == target_ref.value or product_title_matches(target_ref.value, product.title)
+                    ),
+                    None,
+                )
+                if observed_id:
+                    intent = replace(intent, product_query=observed_id)
         pending_clarification = sess.pending_clarification_intent
         starts_new_read = any(
             re.search(rf"\b{word}\b", lower_transcript)
@@ -868,19 +938,20 @@ class ShoppingController:
         selection = None
         proposal = None
         selection_error: Exception | None = None
+        selection_request = LlmToolSelectionRequest(
+            intent=intent,
+            qualified_tools=tuple(tool.to_dict() for tool in qualified),
+            resolved_context={
+                "current_product_id": current_product_id,
+                "evidence_product_ids": list(evidence.products),
+                "active_result_product_ids": list(sess.active_search_product_ids),
+            },
+            turn_id=turn_id,
+            request_revision=request_revision,
+        )
         for _attempt in range(2):
             try:
-                selection = await self.llm_provider.select_tool(LlmToolSelectionRequest(
-                    intent=intent,
-                    qualified_tools=tuple(tool.to_dict() for tool in qualified),
-                    resolved_context={
-                        "current_product_id": current_product_id,
-                        "evidence_product_ids": list(evidence.products),
-                        "active_result_product_ids": list(sess.active_search_product_ids),
-                    },
-                    turn_id=turn_id,
-                    request_revision=request_revision,
-                ))
+                selection = await self.llm_provider.select_tool(selection_request)
                 if selection.tool_name not in expected_tools[intent.operation]:
                     raise ValueError("selected tool does not match the validated shopping intent")
                 proposal = self.tool_registry.hydrate_and_validate(
@@ -891,14 +962,24 @@ class ShoppingController:
                 break
             except (LlmProviderError, ValueError, KeyError) as exc:
                 selection_error = exc
+                selection_request = replace(selection_request, validation_feedback=str(exc))
                 selection = None
                 proposal = None
         if selection is None or proposal is None:
+            logger.warning(
+                "Shopping tool selection failed profile=%s turn=%s revision=%s operation=%s detail=%s",
+                self.llm_provider.profile.profile_id,
+                turn_id,
+                request_revision,
+                intent.operation.value,
+                str(selection_error)[:500],
+            )
             return ControllerTurnResult(
                 session_id=session_id, turn_id=turn_id,
                 request_revision=request_revision, page_epoch=page_epoch,
                 status="error", spoken_response="I could not safely choose a shopping action. Please try again.",
-                extracted_intent=intent, reason=f"Tool selection rejected: {selection_error}",
+                extracted_intent=intent, reason="Tool selection rejected after validated repair attempt",
+                failure_code="tool_selection_failed",
             )
 
         read_tools = {"search_catalog", "browse_store", "get_product", "search_shop_policies_and_faqs"}
@@ -944,9 +1025,13 @@ class ShoppingController:
         else:
             has_product = bool(evidence.products)
 
+        observed_tool = str((tool_observation or {}).get("tool", ""))
+        observed_ok = bool((tool_observation or {}).get("ok"))
         read_satisfied = {
-            "search_catalog": ((evidence.query is not None and (not reference or evidence.query.casefold() == reference))
-                                or (available_tools is None and bool(evidence.products))),
+            "search_catalog": (
+                (observed_tool == "search_catalog" and observed_ok)
+                or (available_tools is None and bool(evidence.products))
+            ),
             "browse_store": tool_observation is not None or (available_tools is None and evidence.query is not None and bool(evidence.products)),
             "get_product": has_product,
             "search_shop_policies_and_faqs": tool_observation is not None,
@@ -1355,18 +1440,36 @@ class ShoppingController:
                     if p.title.lower() in query or p.product_id in query:
                         if p not in matching:
                             matching.append(p)
-            if len(matching) < 2 and len(all_products) >= 2:
-                matching = all_products[:2]
+            if len(matching) < 2:
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="clarification_needed",
+                    spoken_response="Which two products would you like me to compare?",
+                    extracted_intent=intent,
+                    clarification_fields=("comparison_selection",),
+                    reason="Two grounded comparison targets were not available",
+                )
 
             if len(matching) >= 2:
                 p1, p2 = matching[0], matching[1]
                 sess.comparison_context = {"product_ids": [p1.product_id, p2.product_id]}
-                p1_opts = ", ".join(p1.options) if p1.options else "standard"
-                p2_opts = ", ".join(p2.options) if p2.options else "standard"
+                def comparison_price(product: ProductEvidence) -> Money:
+                    available = [variant.price for variant in product.variants if variant.available_for_sale]
+                    return min(available or [variant.price for variant in product.variants])
+
+                def useful_options(product: ProductEvidence) -> str:
+                    names = [name for name in product.options if name.casefold() not in {"title", "default title"}]
+                    return ", ".join(names) if names else "a standard configuration"
+
+                p1_opts = useful_options(p1)
+                p2_opts = useful_options(p2)
                 desc = (
                     f"Comparing 1. {p1.title} and 2. {p2.title}: "
-                    f"{p1.title} is priced at {p1.variants[0].price} with options {p1_opts}; "
-                    f"{p2.title} is priced at {p2.variants[0].price} with options {p2_opts}."
+                    f"{p1.title} starts at {comparison_price(p1)} and has {p1_opts}; "
+                    f"{p2.title} starts at {comparison_price(p2)} and has {p2_opts}."
                 )
                 return ControllerTurnResult(
                     session_id=session_id,

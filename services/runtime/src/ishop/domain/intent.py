@@ -337,19 +337,31 @@ class TurnDecision:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TurnDecision:
+        if not isinstance(data, dict):
+            raise ValueError("TurnDecision must be an object")
         intent_raw = data.get("intent")
         target_raw = data.get("target_reference")
         purpose_raw = data.get("response_purpose")
+        options_raw = data.get("clarification_options")
+        fields_raw = data.get("clarification_fields")
+        facts_raw = data.get("grounded_facts")
+        for name, value in (
+            ("clarification_options", options_raw),
+            ("clarification_fields", fields_raw),
+            ("grounded_facts", facts_raw),
+        ):
+            if value is not None and not isinstance(value, list):
+                raise ValueError(f"{name} must be an array or null")
         return cls(
             mode=DecisionMode(data["mode"]),
             response_text=data.get("response_text"),
             response_purpose=ResponsePurpose(purpose_raw) if purpose_raw else None,
             clarification_question=data.get("clarification_question"),
-            clarification_options=tuple(str(x) for x in data.get("clarification_options", [])),
-            clarification_fields=tuple(str(x) for x in data.get("clarification_fields", [])),
+            clarification_options=tuple(str(x) for x in (options_raw or [])),
+            clarification_fields=tuple(str(x) for x in (fields_raw or [])),
             intent=ShoppingIntent.from_dict(intent_raw) if intent_raw else None,
             target_reference=TargetReference.from_dict(target_raw) if target_raw else None,
-            grounded_facts=tuple(dict(x) for x in data.get("grounded_facts", []) if isinstance(x, dict)),
+            grounded_facts=tuple(dict(x) for x in (facts_raw or []) if isinstance(x, dict)),
         )
 
 

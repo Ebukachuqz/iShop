@@ -33,7 +33,7 @@
       if (!VALID_STATES.has(name)) throw new Error("invalid_widget_state");
       if (name === "completed" && !detail?.verifiedReceipt) throw new Error("verified_receipt_required");
       this.name = name;
-      this.error = name === "failed" ? String(detail?.error || "Please try again.") : "";
+      this.error = name === "failed" && !detail?.suppressError ? String(detail?.error || "Please try again.") : "";
       this.verifiedReceipt = detail?.verifiedReceipt || null;
       return this.snapshot();
     }
@@ -313,7 +313,12 @@
           return;
         }
         if (event.status === "evidence_required" && event.evidence_query) {
-          this.retrieveCatalogEvidence(event.evidence_query, event.turn_id, event.request_revision);
+          this.retrieveCatalogEvidence(
+            event.evidence_query,
+            event.turn_id,
+            event.request_revision,
+            event.selected_tool || "search_catalog",
+          );
           return;
         }
         if (Array.isArray(event.result_product_ids) && event.result_product_ids.length) {
@@ -331,7 +336,7 @@
         } else if (event.authorized_command) {
           this.executeAuthorizedCommand(event.authorized_command);
         } else if (event.status === "error") {
-          this.setState("failed", { error: event.spoken_response || "I couldn’t complete that request." });
+          this.setState("failed", { suppressError: Boolean(event.spoken_response), error: event.spoken_response || "I couldn’t complete that request." });
           this.pendingTurn = null;
         } else {
           this.setState("ready");
@@ -447,7 +452,7 @@
       container.append(header, grid);
     }
 
-    async retrieveCatalogEvidence(query, turnId, requestRevision) {
+    async retrieveCatalogEvidence(query, turnId, requestRevision, toolName = "search_catalog") {
       try {
         if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
         this.setState("checking");
@@ -469,10 +474,17 @@
         }
         this.pendingCatalogProducts = products;
         this.pendingCatalogQuery = query;
+        const observation = {
+          tool: toolName,
+          ok: true,
+          source: "catalog_adapter",
+          data: { products, coverage: "bounded_search" },
+          observed_at_ms: Date.now(),
+        };
         await this.submitShoppingRequest(this.pendingTranscript, {
           query,
           products,
-        }, this.pendingTurn);
+        }, this.pendingTurn, observation);
       } catch (_) {
         this.setState("failed", { error: "I couldn’t search this store right now. Please try again." });
       }

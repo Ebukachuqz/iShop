@@ -186,7 +186,8 @@ try {
   check(String(cart.items[0].variant_id), '101', 'current-page reference add');
 
   await submit('What is your return policy?', 'failed');
-  check(await evaluate("document.querySelector('.drake-error').innerText.includes('safely choose') || document.querySelector('.drake-error').innerText.includes('unavailable')"), true, 'policy capability unavailable is honest');
+  check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('safely choose') || document.querySelector('.drake-conversation').innerText.includes('unavailable')"), true, 'policy capability unavailable is honest');
+  check(await evaluate("document.querySelector('.drake-error').innerText"), '', 'spoken failure is not duplicated in the error panel');
 
   await submit('Show my order history', null);
   await waitFor(() => evaluate("location.pathname === '/account'"));

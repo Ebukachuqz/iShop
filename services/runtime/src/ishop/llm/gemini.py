@@ -108,6 +108,7 @@ class GeminiLlmProvider(LlmProvider):
             cart_summary=request.cart_summary,
             current_product=request.current_product_id,
             currency=request.budget_currency,
+            validation_feedback=request.validation_feedback,
         )
 
         payload = {
@@ -207,6 +208,8 @@ class GeminiLlmProvider(LlmProvider):
             f"Resolved context: {json.dumps(dict(request.resolved_context))}\n"
             f"Qualified tools: {json.dumps(list(request.qualified_tools), separators=(',', ':'))}"
         )
+        if request.validation_feedback:
+            prompt += f"\nYour previous proposal was invalid. Correct these problems: {request.validation_feedback[:800]}"
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"response_mime_type": "application/json", "temperature": 0.0},
