@@ -352,7 +352,14 @@ def test_cs09_cs10_no_progress_and_step_bounds(four_item_evidence, empty_cart):
     controller = ShoppingController(llm_provider=FakeLlmProvider())
     sess_id = "sess_cs10"
     sess = controller.get_session_state(sess_id)
-    sess.continuation_state["step_count"] = 8  # simulate 8 previous steps
+    sess.pending_intents[("turn_loop", 1)] = ShoppingIntent(
+        intent_id="intent_loop",
+        operation=IntentOperation.SEARCH,
+        is_explicit_checkout_request=False,
+        supporting_transcript_span="something",
+        product_query="something",
+    )
+    sess.continuation_state["step_count"] = 8  # simulate 8 previous continuation steps
 
     res = asyncio.run(
         controller.handle_turn(
@@ -360,9 +367,10 @@ def test_cs09_cs10_no_progress_and_step_bounds(four_item_evidence, empty_cart):
             turn_id="turn_loop",
             request_revision=1,
             page_epoch=1,
-            transcript="find something",
+            transcript="",
             evidence=four_item_evidence,
             current_cart=empty_cart,
+            tool_observation={"tool_name": "search_products", "observation": {}},
         )
     )
     assert res.status == "error"

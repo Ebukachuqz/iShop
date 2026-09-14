@@ -308,7 +308,7 @@ class ShoppingController:
             if key != pending_key and key[1] < request_revision:
                 del sess.pending_intents[key]
 
-        is_resume = pending_key in sess.pending_intents
+        is_resume = pending_key in sess.pending_intents or tool_observation is not None
         if not is_resume:
             sess.continuation_state["step_count"] = 0
             sess.conversation_history.append({"role": "user", "content": transcript.strip()})
