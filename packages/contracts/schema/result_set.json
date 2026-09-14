@@ -11,8 +11,10 @@
     "shop_id": {"type": "string"},
     "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
     ,"entries": {"type": "array", "maxItems": 20, "items": {"type": "object"}}
-    ,"rank_reason": {"enum": ["store_order", "cheapest", "closest_to_price"]}
+    ,"rank_reason": {"type": "string"}
     ,"coverage": {"type": "string"}
+    ,"presented": {"type": "boolean"}
+    ,"constraints": {"type": "object"}
   },
   "required": ["result_set_id", "product_ids", "observed_at_ms", "shop_id", "currency"],
   "additionalProperties": false

@@ -172,8 +172,14 @@ class FakeLlmProvider(LlmProvider):
                 unresolved_fields=(),
             )
 
-        if any(phrase in lower for phrase in ("open the", "open product", "go to the", "take me to the product")):
+        if any(phrase in lower for phrase in ("open the", "open product", "go to the", "go to", "take me to the product", "take me to the", "take me to")):
             product = next((name for name in ("Multi-location Snowboard", "Multi-managed Snowboard", "Complete Snowboard") if name.lower() in lower), None)
+            if not product:
+                m = re.search(r"\b(?:take me to (?:the )?|go to (?:the )?|open (?:the )?)(.+)$", lower)
+                if m:
+                    extracted = m.group(1).strip()
+                    if extracted and extracted not in ("it", "cheaper one", "first one", "second one", "third one", "fourth one"):
+                        product = extracted
             product = product or next((name for name in ("snowboard", "shirt", "hoodie", "cap", "dress", "shoes") if name in lower), None)
             return ShoppingIntent(
                 intent_id=intent_id, operation=IntentOperation.NAVIGATE,
@@ -202,7 +208,7 @@ class FakeLlmProvider(LlmProvider):
                 product_query="compare",
                 unresolved_fields=(),
             )
-        if any(phrase in lower for phrase in ("describe", "details about", "tell me about")):
+        if any(phrase in lower for phrase in ("describe", "details about", "tell me about", "tell me more about")):
             product = next((name for name in ("Multi-location Snowboard", "Multi-managed Snowboard", "Complete Snowboard") if name.lower() in lower), None)
             return ShoppingIntent(
                 intent_id=intent_id, operation=IntentOperation.DESCRIBE_PRODUCT,

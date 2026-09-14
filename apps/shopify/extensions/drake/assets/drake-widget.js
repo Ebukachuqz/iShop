@@ -371,7 +371,7 @@
       }
     }
 
-    renderProducts(products) {
+    renderProducts(products, query = null) {
       this.candidates = new CandidateSet(products);
       this.cards.replaceChildren();
       this.candidates.products.forEach((product, index) => {
@@ -391,18 +391,80 @@
         card.append(choose);
         this.cards.append(card);
       });
+      this.renderStorefrontResults(this.candidates.products, query || this.pendingCatalogQuery);
+    }
+
+    renderStorefrontResults(products, query = null) {
+      if (typeof document === "undefined") return;
+      let container = document.getElementById("ishop-drake-results");
+      if (!container) {
+        container = document.createElement("section");
+        container.id = "ishop-drake-results";
+        container.className = "drake-storefront-results";
+        container.setAttribute("aria-label", "Drake Storefront Results");
+        const parent = document.querySelector("main") || document.body;
+        if (parent && parent.prepend) parent.prepend(container);
+      }
+      container.replaceChildren();
+      if (!products || !products.length) {
+        container.hidden = true;
+        return;
+      }
+      container.hidden = false;
+      const header = element("div", "drake-storefront-header");
+      const titleWrap = element("div");
+      const heading = element("h2", "drake-storefront-title", query ? `Drake Results: ${query}` : "Drake Search Results");
+      const count = element("p", "drake-storefront-summary", `Showing ${products.length} matching ${products.length === 1 ? "item" : "items"}`);
+      titleWrap.append(heading, count);
+      const dismissBtn = element("button", "drake-storefront-dismiss", "Dismiss");
+      dismissBtn.type = "button";
+      dismissBtn.addEventListener("click", () => { container.hidden = true; });
+      header.append(titleWrap, dismissBtn);
+
+      const grid = element("div", "drake-storefront-grid");
+      products.forEach((product, index) => {
+        const card = element("article", "drake-storefront-card");
+        card.append(element("h3", "drake-storefront-card__title", `${index + 1}. ${product.title}`));
+        const firstVariant = (product.variants || [])[0];
+        const priceStr = firstVariant?.price ? `${firstVariant.price.amount} ${firstVariant.price.currency}` : "Price unavailable";
+        card.append(element("p", "drake-storefront-card__price", priceStr));
+        const opts = (product.options || []).join(" · ");
+        if (opts) card.append(element("p", "drake-storefront-card__options", `Options: ${opts}`));
+        if (product.url) {
+          const link = element("a", "drake-storefront-card__link", `View item ${index + 1}`);
+          link.href = product.url;
+          card.append(link);
+        }
+        grid.append(card);
+      });
+      container.append(header, grid);
     }
 
     async retrieveCatalogEvidence(query, turnId, requestRevision) {
       try {
         if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
         this.setState("checking");
-        const catalogResult = await this.catalog.search(query, 8);
-        this.pendingCatalogProducts = catalogResult.products;
+        let products = [];
+        const matchingCandidate = this.candidates.products.find((p) =>
+          String(p.product_id) === String(query) || (p.handle && p.handle.toLowerCase() === String(query).toLowerCase())
+        );
+        if (matchingCandidate) {
+          products = [matchingCandidate];
+        } else if (/^\d+$/.test(String(query)) || String(query).startsWith("gid://")) {
+          const observation = await this.catalog.executeTool(
+            { name: "get_product", arguments: { product_reference: query } },
+            { candidateProducts: this.candidates.products, currentProductHandle: this.currentProductHandle, currentProductId: this.currentProductId }
+          );
+          products = Array.isArray(observation?.data?.products) ? observation.data.products : [];
+        } else {
+          const catalogResult = await this.catalog.search(query, 8);
+          products = catalogResult.products || [];
+        }
+        this.pendingCatalogProducts = products;
         this.pendingCatalogQuery = query;
         await this.submitShoppingRequest(this.pendingTranscript, {
           query,
-          products: catalogResult.products,
+          products,
         }, this.pendingTurn);
       } catch (_) {
         this.setState("failed", { error: "I couldn’t search this store right now. Please try again." });
@@ -413,13 +475,17 @@
       try {
         if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
         this.setState("checking");
-        const observation = await this.catalog.executeTool(request, { currentProductHandle: this.currentProductHandle });
+        const observation = await this.catalog.executeTool(request, {
+          currentProductHandle: this.currentProductHandle,
+          currentProductId: this.currentProductId,
+          candidateProducts: this.candidates.products,
+        });
         const products = Array.isArray(observation?.data?.products) ? observation.data.products : [];
-        this.pendingCatalogProducts = products;
+        this.pendingCatalogProducts = products.length ? products : this.pendingCatalogProducts;
         this.pendingCatalogQuery = request.arguments?.query || request.arguments?.product_reference || request.arguments?.collection_reference || request.name;
         await this.submitShoppingRequest(this.pendingTranscript, {
-          query: request.arguments?.query || request.arguments?.product_reference || request.arguments?.collection_reference || request.name,
-          products,
+          query: this.pendingCatalogQuery,
+          products: this.pendingCatalogProducts,
         }, this.pendingTurn, observation);
       } catch (_) {
         this.setState("failed", { error: "I couldn’t use that store capability right now. Please try again." });
@@ -439,15 +505,28 @@
         const bridgeTools = typeof this.bridge.getAvailableTools === "function" ? await this.bridge.getAvailableTools() : [];
         const catalogTools = typeof this.catalog.getAvailableTools === "function" ? await this.catalog.getAvailableTools() : [];
         const availableTools = [...new Set([...bridgeTools, ...catalogTools])].sort();
-        if (!catalogEvidence && this.currentProductHandle && typeof this.catalog.getByHandle === "function") {
-          const currentProduct = await this.catalog.getByHandle(this.currentProductHandle);
-          if (currentProduct) {
-            catalogEvidence = { query: currentProduct.product_id, products: [currentProduct] };
+        
+        const combinedProducts = [];
+        const seenIds = new Set();
+        const addProduct = (p) => {
+          if (p && p.product_id && !seenIds.has(String(p.product_id))) {
+            seenIds.add(String(p.product_id));
+            combinedProducts.push(p);
           }
+        };
+        if (catalogEvidence?.products) {
+          catalogEvidence.products.forEach(addProduct);
         }
-        if (!catalogEvidence && this.candidates.products.length) {
-          catalogEvidence = { query: this.pendingCatalogQuery, products: this.candidates.products };
+        if (this.currentProductHandle && typeof this.catalog.getByHandle === "function") {
+          try {
+            const currentProduct = await this.catalog.getByHandle(this.currentProductHandle);
+            if (currentProduct) addProduct(currentProduct);
+          } catch (_) {}
         }
+        if (this.candidates.products.length) {
+          this.candidates.products.forEach(addProduct);
+        }
+
         const turn = existingTurn || {
           turnId: `turn_${crypto.randomUUID().replaceAll("-", "")}`,
           requestRevision: Math.max(1, this.client.revision + 1),
@@ -469,8 +548,8 @@
             shop_id: currentCart.shop_id,
             currency: currentCart.currency,
             observed_at_ms: Date.now(),
-            query: catalogEvidence?.query || null,
-            products: catalogEvidence?.products || [],
+            query: catalogEvidence?.query || this.pendingCatalogQuery || null,
+            products: combinedProducts,
           },
           current_cart: currentCart,
           current_product_id: this.currentProductId,

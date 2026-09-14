@@ -230,9 +230,32 @@ export class StorefrontCatalog {
       }
       if (name === 'get_product') {
         let product = null;
-        const reference = String(args.product_reference || '');
-        if (page.currentProductHandle) product = await this.getByHandle(page.currentProductHandle);
-        if (!product) product = (await this.search(reference, 8)).products.find((item) => item.title.toLowerCase() === reference.toLowerCase()) || null;
+        const reference = String(args.product_reference || args.product_id || args.handle || '').trim();
+        const candidateList = Array.isArray(page.candidateProducts) ? page.candidateProducts : (Array.isArray(page.products) ? page.products : []);
+        if (reference && candidateList.length) {
+          product = candidateList.find((item) => (
+            String(item.product_id) === reference ||
+            String(item.id) === reference ||
+            (item.handle && String(item.handle).toLowerCase() === reference.toLowerCase()) ||
+            (item.title && String(item.title).toLowerCase() === reference.toLowerCase())
+          )) || null;
+        }
+        if (!product && reference && !/^\d+$/.test(reference) && !reference.startsWith('gid://')) {
+          try {
+            product = await this.getByHandle(reference);
+          } catch (_) {}
+        }
+        if (!product && page.currentProductHandle && (!reference || reference === String(page.currentProductId) || reference.toLowerCase() === page.currentProductHandle.toLowerCase())) {
+          try {
+            product = await this.getByHandle(page.currentProductHandle);
+          } catch (_) {}
+        }
+        if (!product && reference && !/^\d+$/.test(reference) && !reference.startsWith('gid://')) {
+          try {
+            const searchResults = await this.search(reference, 8);
+            product = searchResults.products.find((item) => item.title.toLowerCase() === reference.toLowerCase()) || null;
+          } catch (_) {}
+        }
         return { tool: name, ok: true, source: 'storefront_product', data: { products: product ? [product] : [], coverage: product ? 'exact' : 'none' }, observed_at_ms: observedAt };
       }
       if (name === 'browse_store') {

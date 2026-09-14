@@ -102,6 +102,8 @@ class ControllerSessionState:
     current_page: dict[str, Any] | None = None
     previous_page: dict[str, Any] | None = None
     tool_observations: list[dict[str, Any]] = field(default_factory=list)
+    comparison_context: dict[str, Any] | None = None
+    continuation_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -130,6 +132,8 @@ class ControllerSessionState:
             "current_page": self.current_page,
             "previous_page": self.previous_page,
             "tool_observations": list(self.tool_observations),
+            "comparison_context": dict(self.comparison_context) if self.comparison_context else None,
+            "continuation_state": dict(self.continuation_state),
         }
 
     @classmethod
@@ -138,6 +142,7 @@ class ControllerSessionState:
         for item in data.get("pending_intents", []):
             pending[(str(item["turn_id"]), int(item["revision"]))] = ShoppingIntent.from_dict(item["intent"])
         pending_raw = data.get("pending_clarification_intent")
+        comp_raw = data.get("comparison_context")
         return cls(
             session_id=str(data["session_id"]),
             active_turn_id=data.get("active_turn_id"),
@@ -160,6 +165,8 @@ class ControllerSessionState:
             current_page=data.get("current_page"),
             previous_page=data.get("previous_page"),
             tool_observations=list(data.get("tool_observations", []))[-16:],
+            comparison_context=dict(comp_raw) if isinstance(comp_raw, dict) else None,
+            continuation_state=dict(data.get("continuation_state", {})),
         )
 
 
@@ -301,6 +308,28 @@ class ShoppingController:
             if key != pending_key and key[1] < request_revision:
                 del sess.pending_intents[key]
 
+        is_resume = pending_key in sess.pending_intents
+        if not is_resume:
+            sess.continuation_state["step_count"] = 0
+            sess.conversation_history.append({"role": "user", "content": transcript.strip()})
+            sess.conversation_history = sess.conversation_history[-8:]
+
+        # Step count & no-progress bounding per turn (CS-09, CS-10)
+        step_count = int(sess.continuation_state.get("step_count", 0)) + 1
+        sess.continuation_state["step_count"] = step_count
+        if step_count > 8:
+            sess.pending_intents.pop(pending_key, None)
+            sess.continuation_state.clear()
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status="error",
+                spoken_response="The request could not be completed within the step limit. Please try again.",
+                reason="Exceeded maximum of 8 continuous reasoning/retrieval steps without completion (CS-10)",
+            )
+
         # 2. Prompt injection defence pre-check (T-09)
         for pat in INJECTION_PATTERNS:
             if pat.search(transcript):
@@ -327,11 +356,6 @@ class ShoppingController:
             f"{l.quantity}x {l.canonical_key}" for l in current_cart.lines
         ]
         cart_summary_str = "; ".join(cart_lines_desc) if cart_lines_desc else "Empty"
-
-        is_resume = pending_key in sess.pending_intents
-        if not is_resume:
-            sess.conversation_history.append({"role": "user", "content": transcript.strip()})
-            sess.conversation_history = sess.conversation_history[-8:]
 
         req = LlmIntentRequest(
             transcript=transcript,
@@ -388,7 +412,7 @@ class ShoppingController:
                 )
 
         normalized_transcript = transcript.strip().casefold()
-        if normalized_transcript in {"cancel", "cancel that", "stop", "never mind", "nevermind"}:
+        if any(phrase in normalized_transcript for phrase in ("cancel", "stop", "never mind", "nevermind", "abort")):
             sess = self.get_session_state(session_id)
             sess.pending_clarification_intent = None
             sess.pending_allowed_answers.clear()
@@ -470,17 +494,88 @@ class ShoppingController:
         if asks_for_result_ranking and not intent.product_query and sess.active_search_query:
             intent = replace(intent, product_query=sess.active_search_query)
 
+        # 1. Comparison detection
+        is_comparison_turn = bool(re.search(r"\bcompare\b", lower_transcript))
+        word_ordinals = {
+            "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+            "sixth": 6, "seventh": 7, "eighth": 8
+        }
+        if is_comparison_turn:
+            matched_ordinals = []
+            for word, val in word_ordinals.items():
+                if re.search(rf"\b{word}\b", lower_transcript):
+                    matched_ordinals.append(val)
+            for m in re.finditer(r"\b(?:item|result|option|number)\s*(\d+)\b|\b(\d+)(?:st|nd|rd|th)\b", lower_transcript):
+                matched_ordinals.append(int(m.group(1) or m.group(2)))
+            matched_ordinals = sorted(set(matched_ordinals))
+            if len(matched_ordinals) >= 2 and sess.active_search_product_ids:
+                p_ids = sess.active_search_product_ids
+                c1_idx = matched_ordinals[0] - 1
+                c2_idx = matched_ordinals[1] - 1
+                if 0 <= c1_idx < len(p_ids) and 0 <= c2_idx < len(p_ids):
+                    id1 = p_ids[c1_idx]
+                    id2 = p_ids[c2_idx]
+                    sess.comparison_context = {"product_ids": [id1, id2]}
+                    intent = replace(intent, operation=IntentOperation.DESCRIBE_PRODUCT, product_query=f"{id1} and {id2}")
+
+        # Follow-up: "open the cheaper one" / "take me to the cheaper one" / "cheaper one"
+        wants_cheaper_followup = any(phrase in lower_transcript for phrase in ("cheaper one", "cheapest one", "cheaper item", "cheaper"))
+        if wants_cheaper_followup and sess.comparison_context and "product_ids" in sess.comparison_context:
+            comp_ids = sess.comparison_context["product_ids"]
+            if len(comp_ids) == 2 and all(cid in evidence.products for cid in comp_ids):
+                prod1 = evidence.products[comp_ids[0]]
+                prod2 = evidence.products[comp_ids[1]]
+                price1 = min(v.price for v in prod1.variants)
+                price2 = min(v.price for v in prod2.variants)
+                if price1 < price2:
+                    target_prod = prod1
+                elif price2 < price1:
+                    target_prod = prod2
+                else:
+                    target_prod = None
+
+                if target_prod is None:
+                    return ControllerTurnResult(
+                        session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                        f"Both {prod1.title} and {prod2.title} are priced at {price1}. Which one would you like to open?",
+                        intent,
+                        reason="Compared products have identical prices; tie requires clarification",
+                        clarification_options=(prod1.title, prod2.title),
+                    )
+                wants_nav = any(phrase in lower_transcript for phrase in ("open", "take me", "go to", "show", "navigate", "preview"))
+                intent = replace(
+                    intent,
+                    operation=IntentOperation.NAVIGATE if wants_nav else IntentOperation.DESCRIBE_PRODUCT,
+                    product_query=target_prod.product_id,
+                    unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"),
+                )
+
+        # 2. Ordinal resolution
         ordinal_match = re.search(
-            r"\b(?:choose|result|option|item|number)\s*(\d+)\b|\b(\d+)(?:st|nd|rd|th)\s+(?:one|result|item)\b",
+            r"\b(?:choose|result|option|item|number)\s*(\d+)\b|\b(\d+)(?:st|nd|rd|th)\s+(?:one|result|item|product)?\b",
             lower_transcript,
         )
-        word_ordinals = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
-                         "sixth": 6, "seventh": 7, "eighth": 8}
         ordinal = int(ordinal_match.group(1) or ordinal_match.group(2)) if ordinal_match else next(
             (value for word, value in word_ordinals.items() if re.search(rf"\b{word}\b", lower_transcript)), None
         )
-        if ordinal is not None:
+        refers_to_earlier_search = any(phrase in lower_transcript for phrase in ("earlier search", "previous search", "first search"))
+
+        if ordinal is not None and not is_comparison_turn:
             product_ids = sess.active_search_product_ids
+            if refers_to_earlier_search:
+                historical_sets = [
+                    s for s_id, s in sess.result_sets.items()
+                    if s_id != sess.active_result_set_id and s.get("product_ids")
+                ]
+                if len(historical_sets) > 1:
+                    return ControllerTurnResult(
+                        session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                        "Which earlier search would you like to choose from?", intent,
+                        reason="Multiple earlier search result sets exist",
+                    )
+                elif len(historical_sets) == 1:
+                    product_ids = tuple(historical_sets[0]["product_ids"])
+
             if ordinal < 1 or ordinal > len(product_ids):
                 return ControllerTurnResult(
                     session_id, turn_id, request_revision, page_epoch, "clarification_needed",
@@ -489,23 +584,64 @@ class ShoppingController:
                     clarification_options=tuple(str(index) for index in range(1, len(product_ids) + 1)),
                 )
             sess.selected_product_id = product_ids[ordinal - 1]
-            intent = replace(intent, product_query=sess.selected_product_id,
+            wants_nav = any(phrase in lower_transcript for phrase in ("take me to", "open", "go to", "show page", "page of", "preview"))
+            intent_op = IntentOperation.NAVIGATE if wants_nav else intent.operation
+            intent = replace(intent, operation=intent_op, product_query=sess.selected_product_id,
                              unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"))
+
+        # 3. Compound search & open (e.g. "Find the cheapest available snowboard and open it")
+        if (
+            intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE)
+            and any(phrase in lower_transcript for phrase in ("open it", "open the cheapest", "take me to it", "open"))
+            and any(phrase in lower_transcript for phrase in ("cheapest", "lowest", "least expensive"))
+        ):
+            matching_available = [
+                p for p in evidence.products.values()
+                if (not intent.product_query or product_title_matches(intent.product_query, p.title))
+                and any(v.available_for_sale for v in p.variants)
+            ]
+            if matching_available:
+                matching_available.sort(key=lambda p: min(v.price.amount for v in p.variants if v.available_for_sale))
+                cheapest_item = matching_available[0]
+                intent = replace(
+                    intent,
+                    operation=IntentOperation.NAVIGATE,
+                    product_query=cheapest_item.product_id,
+                    unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"),
+                )
+
+        explicit_current_page = any(
+            phrase in lower_transcript
+            for phrase in (
+                "this product", "this item", "this one", "current product", "one on this page",
+                "on this page", "on its page", "page we are on", "page we're on",
+            )
+        )
 
         refers_to_selected_result = bool(re.search(
             r"\b(?:it|its|that one|the one|that product|that item)\b", lower_transcript
         ))
-        if (
-            refers_to_selected_result
-            and not intent.product_query
-            and sess.selected_product_id
-            and sess.selected_product_id in evidence.products
-        ):
-            intent = replace(
-                intent,
-                product_query=sess.selected_product_id,
-                unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"),
-            )
+        if refers_to_selected_result and not intent.product_query:
+            if (
+                current_product_id
+                and sess.selected_product_id
+                and current_product_id != sess.selected_product_id
+                and not explicit_current_page
+                and not ("from" in lower_transcript and "search" in lower_transcript)
+            ):
+                return ControllerTurnResult(
+                    session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                    "Would you like details for the product on this page or the one from your search?",
+                    intent,
+                    reason="Ambiguous reference 'it' conflicts between current page and search selection",
+                    clarification_options=("This product on page", "Item from search"),
+                )
+            elif sess.selected_product_id and sess.selected_product_id in evidence.products:
+                intent = replace(
+                    intent,
+                    product_query=sess.selected_product_id,
+                    unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"),
+                )
 
         if intent.operation in {IntentOperation.SEARCH, IntentOperation.BROWSE}:
             reset_budget = any(phrase in lower_transcript for phrase in ("no budget", "remove the price limit", "any price", "reset price"))
@@ -518,13 +654,6 @@ class ShoppingController:
             elif "budget" in sess.active_constraints and not reset_budget:
                 intent = replace(intent, budget_constraint=BudgetConstraint(**sess.active_constraints["budget"]))
 
-        explicit_current_page = any(
-            phrase in lower_transcript
-            for phrase in (
-                "this product", "this item", "this one", "current product", "one on this page",
-                "on this page", "on its page", "page we are on", "page we're on",
-            )
-        )
         implicit_page_quantity = (
             intent.operation in {IntentOperation.ADD_TO_CART, IntentOperation.UPDATE_QUANTITY}
             and intent.quantity_change is not None
@@ -590,6 +719,22 @@ class ShoppingController:
                 extracted_intent=intent,
                 reason="Catalog evidence must be retrieved for the structured product query",
                 evidence_query=intent.product_query,
+            )
+
+        # Do not silently discard a second requested action when the provider
+        # returns only the first operation. A bounded plan contract can be
+        # introduced later; until then, ask before executing either side.
+        if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE) and "add" in lower_transcript and ("search" in lower_transcript or "find" in lower_transcript):
+            return ControllerTurnResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                request_revision=request_revision,
+                page_epoch=page_epoch,
+                status="clarification_needed",
+                spoken_response="I can search first, then add a selected result. Which product should I add?",
+                extracted_intent=intent,
+                clarification_fields=("product_selection",),
+                reason="Compound search-and-add request requires an explicit selected product",
             )
 
         expected_tools = {
@@ -687,11 +832,18 @@ class ShoppingController:
                 )
 
         reference = (intent.product_query or "").casefold()
-        has_product = any(product.product_id == intent.product_query or product_title_matches(reference, product.title)
-                          for product in evidence.products.values()) if reference else bool(evidence.products)
+        if sess.comparison_context and sess.comparison_context.get("product_ids"):
+            comp_ids = sess.comparison_context["product_ids"]
+            has_product = all(cid in evidence.products for cid in comp_ids)
+        elif reference:
+            has_product = any(product.product_id == intent.product_query or product_title_matches(reference, product.title)
+                              for product in evidence.products.values())
+        else:
+            has_product = bool(evidence.products)
+
         read_satisfied = {
             "search_catalog": ((evidence.query is not None and (not reference or evidence.query.casefold() == reference))
-                               or (available_tools is None and bool(evidence.products))),
+                                or (available_tools is None and bool(evidence.products))),
             "browse_store": tool_observation is not None or (available_tools is None and evidence.query is not None and bool(evidence.products)),
             "get_product": has_product,
             "search_shop_policies_and_faqs": tool_observation is not None,
@@ -711,26 +863,10 @@ class ShoppingController:
 
         sess.pending_intents.pop(pending_key, None)
 
-        # Do not silently discard a second requested action when the provider
-        # returns only the first operation. A bounded plan contract can be
-        # introduced later; until then, ask before executing either side.
-        if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE) and "add" in lower_transcript and ("search" in lower_transcript or "find" in lower_transcript):
-            return ControllerTurnResult(
-                session_id=session_id,
-                turn_id=turn_id,
-                request_revision=request_revision,
-                page_epoch=page_epoch,
-                status="clarification_needed",
-                spoken_response="I can search first, then add a selected result. Which product should I add?",
-                extracted_intent=intent,
-                clarification_fields=("product_selection",),
-                reason="Compound search-and-add request requires an explicit selected product",
-            )
-
         # 5. Dispatch based on extracted intent operation
         if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE):
             collections = (tool_observation or {}).get("data", {}).get("collections", [])
-            if selection.tool_name == "browse_store" and collections and not evidence.products:
+            if selection.tool_name == "browse_store" and collections:
                 names = [str(item.get("title", "")).strip() for item in collections if isinstance(item, dict) and item.get("title")]
                 return ControllerTurnResult(
                     session_id, turn_id, request_revision, page_epoch, "completed",
@@ -1053,7 +1189,7 @@ class ShoppingController:
             matching.sort(key=lambda p: abs(display_price(p).amount - target.amount))
         elif wants_cheapest:
             matching.sort(key=lambda p: display_price(p).amount)
-        names = [f"{p.title} (from {display_price(p)})" for p in matching[:3]]
+        names = [f"{i+1}. {p.title} (from {display_price(p)})" for i, p in enumerate(matching[:3])]
         if intent.budget_constraint and intent.budget_constraint.comparison == "approximate":
             target = Money.from_string(intent.budget_constraint.max_amount or "0", intent.budget_constraint.currency)
             others = f" Other nearby matches: {', '.join(names[1:])}." if len(names) > 1 else ""
@@ -1084,11 +1220,13 @@ class ShoppingController:
         evidence: EvidenceSnapshot,
     ) -> ControllerTurnResult:
         query = (intent.product_query or "").strip().lower()
+        sess = self.get_session_state(session_id)
         is_explicit_compare = (
             "compare" in query
             or "comparison" in query
             or "vs" in query
             or "difference between" in query
+            or bool(sess.comparison_context and sess.comparison_context.get("product_ids"))
         )
 
         all_products = list(evidence.products.values())
@@ -1104,20 +1242,28 @@ class ShoppingController:
             )
 
         if is_explicit_compare:
-            # Find which products were requested to compare
             matching: list[ProductEvidence] = []
-            for p in all_products:
-                if p.title.lower() in query:
-                    matching.append(p)
+            comp_ids = (sess.comparison_context or {}).get("product_ids", [])
+            for cid in comp_ids:
+                if cid in evidence.products:
+                    matching.append(evidence.products[cid])
+            if len(matching) < 2:
+                for p in all_products:
+                    if p.title.lower() in query or p.product_id in query:
+                        if p not in matching:
+                            matching.append(p)
             if len(matching) < 2 and len(all_products) >= 2:
                 matching = all_products[:2]
 
             if len(matching) >= 2:
                 p1, p2 = matching[0], matching[1]
+                sess.comparison_context = {"product_ids": [p1.product_id, p2.product_id]}
+                p1_opts = ", ".join(p1.options) if p1.options else "standard"
+                p2_opts = ", ".join(p2.options) if p2.options else "standard"
                 desc = (
-                    f"Comparing {p1.title} and {p2.title}: "
-                    f"{p1.title} is priced at {p1.variants[0].price} with options {', '.join(p1.options or ['standard'])}; "
-                    f"{p2.title} is priced at {p2.variants[0].price} with options {', '.join(p2.options or ['standard'])}."
+                    f"Comparing 1. {p1.title} and 2. {p2.title}: "
+                    f"{p1.title} is priced at {p1.variants[0].price} with options {p1_opts}; "
+                    f"{p2.title} is priced at {p2.variants[0].price} with options {p2_opts}."
                 )
                 return ControllerTurnResult(
                     session_id=session_id,
@@ -1127,6 +1273,7 @@ class ShoppingController:
                     status="completed",
                     spoken_response=desc,
                     extracted_intent=intent,
+                    result_product_ids=(p1.product_id, p2.product_id),
                 )
 
         # Single product describe request (R9)

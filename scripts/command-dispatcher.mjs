@@ -227,7 +227,7 @@ if (isMainModule) {
     console.log('[iShop] Running connected storefront contract smoke tests...');
     runStep('Connected Chrome storefront journey', 'node', ['tests/e2e/connected-storefront.mjs']);
     for (const file of ['packages/contracts/tests/browser_smoke.test.js', 'packages/contracts/tests/voice_widget.test.js', 'packages/contracts/tests/bridge.test.js']) {
-      runStep(`Browser E2E contract: ${file}`, 'node', ['--test', '--test-isolation=none', file]);
+      runStep(`Browser E2E contract: ${file}`, 'node', ['--test', file]);
     }
     if (overallExitCode !== 0) process.exit(overallExitCode);
     console.log('[iShop] Connected storefront contract smoke tests passed.');

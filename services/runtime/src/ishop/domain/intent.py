@@ -33,6 +33,51 @@ class IntentOperation(str, Enum):
     SHOW_VARIANT = "show_variant"
 
 
+class ReferenceKind(str, Enum):
+    """Kinds of grounded contextual shopping references."""
+
+    SEARCH_QUERY = "search_query"
+    OBSERVED_PRODUCT = "observed_product"
+    RESULT_POSITION = "result_position"
+    CURRENT_PAGE = "current_page"
+    CART_LINE = "cart_line"
+    COLLECTION = "collection"
+    COMPARISON_SELECTION = "comparison_selection"
+
+
+@dataclass(frozen=True)
+class TargetReference:
+    """Explicitly tagged shopping target reference."""
+
+    kind: ReferenceKind
+    value: str
+    result_set_id: str | None = None
+    position: int | None = None
+    handle: str | None = None
+    url: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind.value,
+            "value": self.value,
+            "result_set_id": self.result_set_id,
+            "position": self.position,
+            "handle": self.handle,
+            "url": self.url,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TargetReference:
+        return cls(
+            kind=ReferenceKind(data["kind"]),
+            value=str(data["value"]),
+            result_set_id=data.get("result_set_id"),
+            position=data.get("position"),
+            handle=data.get("handle"),
+            url=data.get("url"),
+        )
+
+
 @dataclass(frozen=True)
 class QuantityChange:
     """Quantity change specification with set or increment semantics (T-05)."""
