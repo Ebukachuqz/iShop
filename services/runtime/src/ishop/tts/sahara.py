@@ -112,7 +112,7 @@ class SaharaTtsProvider(TtsProvider):
         api_key: str | None = None,
         *,
         language: str = "en",
-        accent: str = "pidgin",
+        accent: str = "yoruba",
         gender: str = "female",
         output_format: str = "wav",
         endpoint_url: str | None = None,

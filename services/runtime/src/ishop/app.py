@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,9 @@ from ishop.orchestration.controller import ShoppingController
 from ishop.speech.sahara_stream import SaharaStreamingSession
 from ishop.tts.sahara import SaharaTtsProvider
 from ishop.transport.websocket import create_voice_app
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
@@ -132,6 +136,10 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
                     "channels": chunk.channels, "format": chunk.format})
             return chunks
         except Exception:
+            logger.warning(
+                "Sahara TTS synthesis failed; delivering the text response without audio",
+                exc_info=True,
+            )
             return []
 
     app = create_voice_app(

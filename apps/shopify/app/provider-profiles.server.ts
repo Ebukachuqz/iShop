@@ -73,7 +73,7 @@ export function providerProfiles(): ProviderProfile[] {
       id: "sahara-tts-female-pcm",
       role: "tts",
       label: "Drake female voice",
-      mode: "Sahara female Pidgin voice",
+      mode: "Sahara female English voice with Yoruba accent",
       enabled: credentialPresent("SAHARA_API_KEY"),
       disabledReason: "Sahara server credential is unavailable",
     },
