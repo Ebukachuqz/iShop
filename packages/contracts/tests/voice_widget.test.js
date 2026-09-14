@@ -34,11 +34,22 @@ function loadVoice() {
   return window.IShopVoiceSession;
 }
 
-function loadWidgetState() {
+function loadWidgetState(customDoc) {
   const window = {};
+  const mockStorage = {
+    _data: {},
+    getItem: (k) => mockStorage._data[k] || null,
+    setItem: (k, v) => { mockStorage._data[k] = String(v); },
+    removeItem: (k) => { delete mockStorage._data[k]; },
+  };
+  const doc = customDoc || { getElementById: () => null };
   vm.runInNewContext(widgetSource, {
     window,
-    document: { getElementById: () => null },
+    document: doc,
+    crypto,
+    sessionStorage: mockStorage,
+    location: { host: 'shop.myshopify.com', pathname: '/', search: '' },
+    console,
   });
   return window.IShopDrakeWidget;
 }
@@ -255,4 +266,309 @@ test('voice client cancelTurn sends cancellation and notifies event handler', as
   client.cancelTurn();
   assert.equal(sentData.some((d) => d.includes('cancel_turn')), true);
   assert.equal(events.some((e) => e.type === 'turn_canceled' && e.revision === 3), true);
+});
+
+test('integrated widget and voice client submits exactly one shopping turn on duplicate finals', async () => {
+  const voice = loadVoice();
+
+  // Mock DOM environment for DrakeWidget
+  function makeMockElement(tag, className, text) {
+    const el = {
+      tagName: tag.toUpperCase(),
+      className: className || '',
+      textContent: text !== undefined ? String(text) : '',
+      hidden: false,
+      attributes: {},
+      dataset: { shopDomain: 'shop.myshopify.com' },
+      children: [],
+      classList: {
+        add: (c) => { el.className = `${el.className} ${c}`.trim(); },
+        remove: (c) => { el.className = el.className.replace(c, '').trim(); },
+        contains: (c) => el.className.includes(c),
+      },
+      setAttribute: (k, v) => { el.attributes[k] = String(v); },
+      getAttribute: (k) => el.attributes[k],
+      removeAttribute: (k) => { delete el.attributes[k]; },
+      append: (...nodes) => { el.children.push(...nodes); },
+      appendChild: (node) => { el.children.push(node); return node; },
+      replaceChildren: (...nodes) => { el.children = [...nodes]; },
+      insertBefore: (node, ref) => {
+        const idx = el.children.indexOf(ref);
+        if (idx >= 0) el.children.splice(idx, 0, node);
+        else el.children.push(node);
+        return node;
+      },
+      addEventListener: (type, handler) => {
+        el._listeners = el._listeners || {};
+        el._listeners[type] = el._listeners[type] || [];
+        el._listeners[type].push(handler);
+      },
+      querySelector: (selector) => {
+        if (selector === 'form') return makeMockElement('form');
+        return makeMockElement('div');
+      },
+      querySelectorAll: () => [],
+      focus: () => {},
+      value: '',
+    };
+    return el;
+  }
+
+  const mockDoc = { createElement: makeMockElement, getElementById: () => null };
+  const { DrakeWidget } = loadWidgetState(mockDoc);
+
+  const sentMessages = [];
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      queueMicrotask(() => {
+        this.readyState = 1;
+        if (this.onopen) this.onopen();
+      });
+    }
+    send(data) { sentMessages.push(data); }
+    close() { this.readyState = 3; if (this.onclose) this.onclose(); }
+  }
+
+  const root = makeMockElement('div', 'ishop-drake-root');
+  const client = new voice.VoiceSessionClient({
+    url: 'wss://runtime.example/ws/voice/shop.myshopify.com',
+    grant: { grant_id: 'grant_1' },
+    WebSocket: FakeWebSocket,
+  });
+
+  const widget = new DrakeWidget(root, voice);
+  widget.setClient(client, {
+    bridge: { readAuthoritativeCart: async () => ({ shop_id: 'shop.myshopify.com', currency: 'USD', lines: [] }) },
+    catalog: { searchProducts: async () => [] },
+  });
+
+  await client.connect();
+  await client.startTurn({ revision: 1 });
+
+  // Simulate speech provider emitting duplicate final transcripts over the socket
+  client._receive(JSON.stringify({ type: 'final_transcript', revision: 1, text: 'Find snowboard' }));
+  client._receive(JSON.stringify({ type: 'final_transcript', revision: 1, text: 'Find snowboard' }));
+  client._receive(JSON.stringify({ type: 'final_transcript', revision: 1, text: 'Find snowboard' }));
+
+  // Yield to microtasks for async submitShoppingRequest
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Verify only ONE shopping_turn was transmitted
+  const shoppingTurns = sentMessages.filter((m) => {
+    try { return JSON.parse(m).type === 'shopping_turn'; } catch (_) { return false; }
+  });
+  assert.equal(shoppingTurns.length, 1);
+  assert.equal(JSON.parse(shoppingTurns[0]).transcript, 'Find snowboard');
+
+  // Verify shopper message was added to history exactly once
+  const shopperMessages = widget.messageHistory.filter((m) => m.role === 'shopper');
+  assert.equal(shopperMessages.length, 1);
+  assert.equal(shopperMessages[0].text, 'Find snowboard');
+});
+
+test('microphone denial transitions to failed state and typing text submits cleanly', async () => {
+  const voice = loadVoice();
+
+  function makeMockElement(tag, className, text) {
+    const el = {
+      tagName: tag.toUpperCase(),
+      className: className || '',
+      textContent: text !== undefined ? String(text) : '',
+      hidden: false,
+      attributes: {},
+      dataset: { shopDomain: 'shop.myshopify.com' },
+      children: [],
+      classList: {
+        add: (c) => { el.className = `${el.className} ${c}`.trim(); },
+        remove: (c) => { el.className = el.className.replace(c, '').trim(); },
+        contains: (c) => el.className.includes(c),
+      },
+      setAttribute: (k, v) => { el.attributes[k] = String(v); },
+      getAttribute: (k) => el.attributes[k],
+      removeAttribute: (k) => { delete el.attributes[k]; },
+      append: (...nodes) => { el.children.push(...nodes); },
+      appendChild: (node) => { el.children.push(node); return node; },
+      replaceChildren: (...nodes) => { el.children = [...nodes]; },
+      insertBefore: (node, ref) => {
+        const idx = el.children.indexOf(ref);
+        if (idx >= 0) el.children.splice(idx, 0, node);
+        else el.children.push(node);
+        return node;
+      },
+      addEventListener: (type, handler) => {
+        el._listeners = el._listeners || {};
+        el._listeners[type] = el._listeners[type] || [];
+        el._listeners[type].push(handler);
+      },
+      querySelector: (selector) => {
+        if (selector === 'form') return makeMockElement('form');
+        return makeMockElement('div');
+      },
+      querySelectorAll: () => [],
+      focus: () => {},
+      value: '',
+    };
+    return el;
+  }
+
+  const mockDoc = { createElement: makeMockElement, getElementById: () => null };
+  const { DrakeWidget } = loadWidgetState(mockDoc);
+
+  const sentMessages = [];
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      queueMicrotask(() => { this.readyState = 1; if (this.onopen) this.onopen(); });
+    }
+    send(data) { sentMessages.push(data); }
+    close() { this.readyState = 3; if (this.onclose) this.onclose(); }
+  }
+
+  const root = makeMockElement('div', 'ishop-drake-root');
+  const failingVoice = {
+    ...voice,
+    PcmCapture: class {
+      async start() { throw new Error('NotAllowedError: Permission denied'); }
+      stop() {}
+    },
+  };
+
+  const client = new voice.VoiceSessionClient({
+    url: 'wss://runtime.example/ws/voice/shop.myshopify.com',
+    grant: { grant_id: 'grant_1' },
+    WebSocket: FakeWebSocket,
+  });
+
+  const widget = new DrakeWidget(root, failingVoice);
+  widget.setClient(client, {
+    bridge: { readAuthoritativeCart: async () => ({ shop_id: 'shop.myshopify.com', currency: 'USD', lines: [] }) },
+    catalog: { searchProducts: async () => [] },
+  });
+
+  await client.connect();
+
+  // Trigger mic start -> fails due to mic permission denial
+  await widget.startListening();
+  assert.equal(widget.state.name, 'failed');
+  assert.match(widget.error.textContent, /Microphone access failed/);
+  assert.equal(widget.micButton.hidden, false);
+  assert.equal(widget.stopButton.hidden, true);
+
+  // Fallback: Shopper types message instead
+  widget.textInput.value = 'Find snowboard';
+  await widget.submitText();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const shoppingTurns = sentMessages.filter((m) => {
+    try { return JSON.parse(m).type === 'shopping_turn'; } catch (_) { return false; }
+  });
+  assert.equal(shoppingTurns.length, 1);
+  assert.equal(JSON.parse(shoppingTurns[0]).transcript, 'Find snowboard');
+  assert.equal(widget.state.name, 'interpreting');
+});
+
+test('text delivery and card presentation succeed independent of delayed or failed TTS', async () => {
+  const voice = loadVoice();
+
+  function makeMockElement(tag, className, text) {
+    const el = {
+      tagName: tag.toUpperCase(),
+      className: className || '',
+      textContent: text !== undefined ? String(text) : '',
+      hidden: false,
+      attributes: {},
+      dataset: { shopDomain: 'shop.myshopify.com' },
+      children: [],
+      classList: {
+        add: (c) => { el.className = `${el.className} ${c}`.trim(); },
+        remove: (c) => { el.className = el.className.replace(c, '').trim(); },
+        contains: (c) => el.className.includes(c),
+      },
+      setAttribute: (k, v) => { el.attributes[k] = String(v); },
+      getAttribute: (k) => el.attributes[k],
+      removeAttribute: (k) => { delete el.attributes[k]; },
+      append: (...nodes) => { el.children.push(...nodes); },
+      appendChild: (node) => { el.children.push(node); return node; },
+      replaceChildren: (...nodes) => { el.children = [...nodes]; },
+      insertBefore: (node, ref) => {
+        const idx = el.children.indexOf(ref);
+        if (idx >= 0) el.children.splice(idx, 0, node);
+        else el.children.push(node);
+        return node;
+      },
+      addEventListener: (type, handler) => {
+        el._listeners = el._listeners || {};
+        el._listeners[type] = el._listeners[type] || [];
+        el._listeners[type].push(handler);
+      },
+      querySelector: (selector) => {
+        if (selector === 'form') return makeMockElement('form');
+        return makeMockElement('div');
+      },
+      querySelectorAll: () => [],
+      focus: () => {},
+      value: '',
+    };
+    return el;
+  }
+
+  const mockDoc = {
+    createElement: makeMockElement,
+    getElementById: () => null,
+    querySelector: (selector) => (selector === 'form' ? makeMockElement('form') : makeMockElement('div')),
+    body: makeMockElement('body'),
+  };
+  const { DrakeWidget } = loadWidgetState(mockDoc);
+
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      queueMicrotask(() => { this.readyState = 1; if (this.onopen) this.onopen(); });
+    }
+    send() {}
+    close() { this.readyState = 3; }
+  }
+
+  const root = makeMockElement('div', 'ishop-drake-root');
+  const client = new voice.VoiceSessionClient({
+    url: 'wss://runtime.example/ws/voice/shop.myshopify.com',
+    grant: { grant_id: 'grant_1' },
+    WebSocket: FakeWebSocket,
+  });
+
+  const widget = new DrakeWidget(root, voice);
+  widget.setClient(client, {
+    bridge: { readAuthoritativeCart: async () => ({ shop_id: 'shop.myshopify.com', currency: 'USD', lines: [] }) },
+    catalog: { searchProducts: async () => [{ product_id: '1', title: 'Complete Snowboard', variants: [] }] },
+  });
+  widget.pendingCatalogProducts = [{ product_id: '1', title: 'Complete Snowboard', variants: [] }];
+
+  await client.connect();
+
+  // Server delivers shopping_result with text and product IDs without any TTS audio
+  client._receive(JSON.stringify({
+    type: 'shopping_result',
+    turn_id: 'turn_1',
+    request_revision: 1,
+    page_epoch: 1,
+    status: 'completed',
+    spoken_response: 'Found 1 snowboard matching your search.',
+    result_product_ids: ['1'],
+  }));
+
+  // Assert text message is rendered immediately
+  const assistantMessages = widget.messageHistory.filter((m) => m.role === 'assistant');
+  assert.equal(assistantMessages.length, 1);
+  assert.equal(assistantMessages[0].text, 'Found 1 snowboard matching your search.');
+
+  // Assert product cards rendered
+  assert.equal(widget.candidates.products.length, 1);
+  assert.equal(widget.candidates.products[0].title, 'Complete Snowboard');
+
+  // Assert state is ready even without TTS
+  assert.equal(widget.state.name, 'ready');
 });

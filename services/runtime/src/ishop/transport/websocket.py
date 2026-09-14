@@ -305,13 +305,18 @@ def create_voice_app(
                                     logger.exception("Failed to persist authorized command")
                         await websocket.send_json({"type": "shopping_result", **result})
                         if shopping_tts_handler is not None and result.get("spoken_response"):
-                            chunks = await shopping_tts_handler(str(result["spoken_response"]), int(payload["request_revision"]))
-                            if chunks:
-                                await websocket.send_json({
-                                    "type": "shopping_tts", "turn_id": payload["turn_id"],
-                                    "request_revision": payload["request_revision"], "page_epoch": payload["page_epoch"],
-                                    "tts_audio_chunks": chunks,
-                                })
+                            try:
+                                chunks = await shopping_tts_handler(str(result["spoken_response"]), int(payload["request_revision"]))
+                                if chunks:
+                                    await websocket.send_json({
+                                        "type": "shopping_tts",
+                                        "turn_id": payload["turn_id"],
+                                        "request_revision": payload["request_revision"],
+                                        "page_epoch": payload["page_epoch"],
+                                        "tts_audio_chunks": chunks,
+                                    })
+                            except Exception:
+                                logger.warning("TTS synthesis failed or timed out; text result delivered safely", exc_info=True)
                     except Exception:
                         logger.exception("Shopping turn handler failed")
                         await _send_error(websocket, "shopping_runtime_failed")

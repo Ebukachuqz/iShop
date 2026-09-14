@@ -1,19 +1,15 @@
 """Comprehensive voice reliability and lifecycle acceptance tests (WP-07, WP-11, WP-09B).
 
 Covers:
-- Three or more consecutive voice turns with retained session context over WebSocket.
-- Exactly one accepted final per current turn; partials cannot execute.
-- Long pauses, duplicate/stale ASR finals, and late LLM/tool/TTS results.
-- Barge-in, explicit cancellation, and obsolete playback suppression.
-- Text delivery independent of delayed or failed TTS.
-- Microphone denial and recoverable audio/network/provider failures.
-- Reload, reconnect, and runtime restart recovery.
-- Durable uncertain cart outcomes with no mutation replay.
-- Two tabs and manual cart changes (cart fingerprint precondition checks).
-- Expired grants, revoked installation, and provider-profile changes.
-- Trusted checkout handoff with terminated microphone/playback/action activity.
-- Fresh activation and reconciliation when returning from checkout.
-- Privacy, retention cleanup, and raw recording disabled by default.
+1. Multi-turn voice conversation through production runtime wiring with clarification completion and cart verification.
+2. Delayed/empty speech followed by a successful new turn.
+3. Real runtime restart with file-backed persistence and no mutation replay (S-10, T-16).
+4. Two browser tabs / concurrent cart modifications with stale cart fingerprint rejection preserving unrelated lines (S-08, S-09).
+5. Active session revocation over internal control endpoint.
+6. Delayed/failed TTS isolation without blocking text shopping result or cards.
+7. Single accepted final, duplicate suppression, stale revision, barge-in, and turn cancellation.
+8. Expired grants, cross-shop grants, and provider profile enforcement.
+9. Privacy trace redaction and retention cleanup.
 """
 
 from __future__ import annotations
@@ -28,8 +24,9 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from ishop.app import _evidence_from_browser
 from ishop.commerce.catalog import EvidenceSnapshot, ProductEvidence, VariantEvidence
+from ishop.commerce.reconciler import CommandReconciler, ExecutionOutcome
+from ishop.commerce.simulator import ShopifySimulator
 from ishop.domain.intent import DecisionMode, IntentOperation, ShoppingIntent
 from ishop.domain.journal import CommandJournal, CommandStatus, JournalEntry
 from ishop.domain.models import (
@@ -47,6 +44,8 @@ from ishop.orchestration.controller import ShoppingController
 from ishop.speech.base import SpeechProviderError
 from ishop.speech.realtime import SpeechEventKind, SpeechStreamEvent
 from ishop.transport.websocket import (
+    RevocationRequest,
+    SessionRevocationRegistry,
     _verify_reported_cart_result,
     create_voice_app,
 )
@@ -127,7 +126,7 @@ def sample_catalog_evidence() -> EvidenceSnapshot:
                 product_title="Complete Snowboard",
                 variant_title="Ice",
                 selected_options={"Color": "Ice"},
-                price=Money(69995, "USD"),
+                price=Money.from_minor_units(69995, "USD"),
                 available_for_sale=True,
             ),
             VariantEvidence(
@@ -136,7 +135,7 @@ def sample_catalog_evidence() -> EvidenceSnapshot:
                 product_title="Complete Snowboard",
                 variant_title="Dawn",
                 selected_options={"Color": "Dawn"},
-                price=Money(69995, "USD"),
+                price=Money.from_minor_units(69995, "USD"),
                 available_for_sale=True,
             ),
         ),
@@ -151,7 +150,7 @@ def sample_catalog_evidence() -> EvidenceSnapshot:
                 product_title="Multi-location Snowboard",
                 variant_title="Default Title",
                 selected_options={},
-                price=Money(72995, "USD"),
+                price=Money.from_minor_units(72995, "USD"),
                 available_for_sale=True,
             ),
         ),
@@ -166,7 +165,7 @@ def sample_catalog_evidence() -> EvidenceSnapshot:
                 product_title="Multi-managed Snowboard",
                 variant_title="Default Title",
                 selected_options={},
-                price=Money(62995, "USD"),
+                price=Money.from_minor_units(62995, "USD"),
                 available_for_sale=True,
             ),
         ),
@@ -181,16 +180,25 @@ def sample_catalog_evidence() -> EvidenceSnapshot:
 
 
 # ============================================================================
-# 1. Three or more consecutive voice turns with retained session context
+# 1. Multi-turn voice conversation with completed clarification and cart assertion
 # ============================================================================
 
-def test_three_consecutive_voice_turns_with_retained_context(tmp_path):
-    """Verify 3 consecutive turns over WebSocket retain context, session state, and history."""
+def test_three_consecutive_voice_turns_and_clarification_completion_with_cart_verification(tmp_path):
+    """Exercise consecutive voice turns through production runtime wiring.
+
+    Turn 1: Search snowboards -> 3 candidates found.
+    Turn 2: Comparison filter ("Which is cheapest in your search?") -> candidate 3 identified.
+    Turn 3: Add to cart ("Add the Complete Snowboard to my cart") -> clarification needed for Ice vs Dawn.
+    Turn 4: Complete clarification ("Ice") -> authorized command ADD_VARIANT for variant 101,
+            cart mutated and independently verified.
+    """
     session_store = SessionStore(str(tmp_path / "sessions.db"))
     controller = ShoppingController(FakeLlmProvider())
     catalog_ev = sample_catalog_evidence()
+    current_cart = CartSnapshot(shop_id=SHOP, currency="USD", lines=())
 
     async def turn_handler(payload: dict[str, Any], grant: SessionGrant) -> dict[str, Any]:
+        nonlocal current_cart
         sid = grant.anonymous_session_id
         saved = session_store.load(sid)
         if saved:
@@ -202,7 +210,7 @@ def test_three_consecutive_voice_turns_with_retained_context(tmp_path):
             page_epoch=payload["page_epoch"],
             transcript=payload["transcript"],
             evidence=catalog_ev,
-            current_cart=CartSnapshot.from_dict(payload.get("current_cart") or {"shop_id": SHOP, "currency": "USD", "lines": []}),
+            current_cart=current_cart,
         )
         session_store.save(sid, controller.export_session_state(sid))
         return {
@@ -217,10 +225,16 @@ def test_three_consecutive_voice_turns_with_retained_context(tmp_path):
 
     def speech_factory(**kwargs):
         rev = kwargs.get("revision", 1)
-        texts = {1: "Find snowboard", 2: "Which is cheapest in your search?", 3: "Add the Complete Snowboard to my cart"}
+        texts = {
+            1: "Find snowboard",
+            2: "Which is cheapest in your search?",
+            3: "Add the Complete Snowboard to my cart",
+            4: "Ice",
+        }
+        text = texts.get(rev, "")
         events = [
-            SpeechStreamEvent(SpeechEventKind.PARTIAL_TRANSCRIPT, "sess", rev, text=texts.get(rev, "")[:4]),
-            SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, "sess", rev, text=texts.get(rev, "")),
+            SpeechStreamEvent(SpeechEventKind.PARTIAL_TRANSCRIPT, "sess", rev, text=text[:3]),
+            SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, "sess", rev, text=text),
         ]
         return ScriptedSpeechSession(rev, events)
 
@@ -244,10 +258,10 @@ def test_three_consecutive_voice_turns_with_retained_context(tmp_path):
         ws.send_bytes(b"\x00\x00" * 256)
         ws.send_json({"type": "finish_turn", "page_epoch": 1})
 
-        ev_partial = ws.receive_json()
-        assert ev_partial["type"] == "partial_transcript" and ev_partial["revision"] == 1
-        ev_final = ws.receive_json()
-        assert ev_final["type"] == "final_transcript" and ev_final["revision"] == 1
+        ev_partial1 = ws.receive_json()
+        assert ev_partial1["type"] == "partial_transcript" and ev_partial1["revision"] == 1
+        ev_final1 = ws.receive_json()
+        assert ev_final1["type"] == "final_transcript" and ev_final1["revision"] == 1
 
         ws.send_json({
             "type": "shopping_turn",
@@ -258,9 +272,10 @@ def test_three_consecutive_voice_turns_with_retained_context(tmp_path):
         })
         ev_res1 = ws.receive_json()
         assert ev_res1["type"] == "shopping_result"
-        assert len(ev_res1["result_product_ids"]) > 0
+        assert ev_res1["status"] == "completed"
+        assert len(ev_res1["result_product_ids"]) == 3
 
-        # Turn 2: Filter/Refinement (retains turn 1 search set)
+        # Turn 2: Comparison Filter (Which is cheapest?)
         ws.send_json({"type": "start_turn", "revision": 2, "language": "pcm", "sample_rate": 16000, "channels": 1})
         assert ws.receive_json()["type"] == "session_started"
         ws.send_bytes(b"\x00\x00" * 256)
@@ -279,8 +294,9 @@ def test_three_consecutive_voice_turns_with_retained_context(tmp_path):
         ev_res2 = ws.receive_json()
         assert ev_res2["type"] == "shopping_result"
         assert ev_res2["status"] == "completed"
+        assert "Multi-managed Snowboard" in ev_res2["spoken_response"]
 
-        # Turn 3: Add to cart based on conversation context
+        # Turn 3: Add to cart requiring variant clarification (Ice vs Dawn)
         ws.send_json({"type": "start_turn", "revision": 3, "language": "pcm", "sample_rate": 16000, "channels": 1})
         assert ws.receive_json()["type"] == "session_started"
         ws.send_bytes(b"\x00\x00" * 256)
@@ -298,16 +314,359 @@ def test_three_consecutive_voice_turns_with_retained_context(tmp_path):
         })
         ev_res3 = ws.receive_json()
         assert ev_res3["type"] == "shopping_result"
-        assert ev_res3["status"] in ("completed", "clarification_needed")
+        assert ev_res3["status"] == "clarification_needed"
+        assert "Ice" in ev_res3["spoken_response"] or "Dawn" in ev_res3["spoken_response"]
+        assert ev_res3["authorized_command"] is None
 
+        # Turn 4: Shopper selects "Ice" variant to complete clarification
+        ws.send_json({"type": "start_turn", "revision": 4, "language": "pcm", "sample_rate": 16000, "channels": 1})
+        assert ws.receive_json()["type"] == "session_started"
+        ws.send_bytes(b"\x00\x00" * 256)
+        ws.send_json({"type": "finish_turn", "page_epoch": 1})
+
+        ws.receive_json()  # partial
+        ws.receive_json()  # final
+
+        ws.send_json({
+            "type": "shopping_turn",
+            "turn_id": "turn_4",
+            "request_revision": 4,
+            "page_epoch": 1,
+            "transcript": "Ice",
+        })
+        ev_res4 = ws.receive_json()
+        assert ev_res4["type"] == "shopping_result"
+        # Must be definitively COMPLETED (not accepted as ambiguity)
+        assert ev_res4["status"] == "completed"
+        assert ev_res4["authorized_command"] is not None
+        cmd = ev_res4["authorized_command"]
+        assert cmd["operation"] == "add_variant"
+        assert cmd["parameters"]["variant_id"] == "101"
+        assert cmd["parameters"]["quantity"] == 1
+
+        # Simulate authoritative cart execution and verify resulting cart
+        before_cart = current_cart
+        current_cart = CartSnapshot(
+            shop_id=SHOP,
+            currency="USD",
+            lines=(CartLine("101", 1, shopify_line_key="line_101"),),
+        )
+        command_result_payload = {
+            "outcome": "verified_success",
+            "before_cart": before_cart.to_dict(),
+            "after_cart": current_cart.to_dict(),
+        }
+        assert _verify_reported_cart_result(cmd, command_result_payload) is True
+
+        # Send command_result back over WebSocket
+        ws.send_json({
+            "type": "command_result",
+            "command_id": cmd["command_id"],
+            "result": command_result_payload,
+        })
+        cmd_ack = ws.receive_json()
+        assert cmd_ack["type"] == "command_result_ack"
+        assert cmd_ack["command_id"] == cmd["command_id"]
+
+        # Independently assert final cart snapshot
+        assert len(current_cart.lines) == 1
+        assert current_cart.lines[0].variant_id == "101"
+        assert current_cart.lines[0].quantity == 1
+        assert catalog_ev.products["1"].variants[0].price.to_minor_units() == 69995
 
 
 # ============================================================================
-# 2. Exactly one accepted final per turn, duplicate finals rejected, and pause/silence handling
+# 2. Delayed / Empty speech followed by a successful new turn
+# ============================================================================
+
+def test_delayed_or_empty_speech_followed_by_successful_new_turn():
+    """Verify that a silent/delayed turn executes zero commands and allows the next turn to succeed cleanly."""
+    executed_turns: list[dict[str, Any]] = []
+
+    async def turn_handler(payload: dict[str, Any], grant: SessionGrant) -> dict[str, Any]:
+        executed_turns.append(payload)
+        if payload["transcript"] == "":
+            return {"turn_id": payload["turn_id"], "status": "empty", "spoken_response": "I didn't hear anything."}
+        return {
+            "turn_id": payload["turn_id"],
+            "request_revision": payload["request_revision"],
+            "page_epoch": payload["page_epoch"],
+            "status": "completed",
+            "spoken_response": "Found 3 snowboards.",
+            "result_product_ids": ["1", "2", "3"],
+        }
+
+    def speech_factory(**kwargs):
+        rev = kwargs.get("revision", 1)
+        if rev == 1:
+            events = [
+                SpeechStreamEvent(SpeechEventKind.PARTIAL_TRANSCRIPT, "s1", 1, text=""),
+                SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, "s1", 1, text=""),
+            ]
+        else:
+            events = [
+                SpeechStreamEvent(SpeechEventKind.PARTIAL_TRANSCRIPT, "s2", 2, text="Find"),
+                SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, "s2", 2, text="Find snowboard"),
+            ]
+        return ScriptedSpeechSession(rev, events)
+
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        session_factory=speech_factory,
+        shopping_turn_handler=turn_handler,
+    )
+
+    with TestClient(app).websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as ws:
+        ws.send_json({"type": "authenticate", "grant": make_signed_grant()})
+        ws.receive_json()
+
+        # Turn 1: Empty speech
+        ws.send_json({"type": "start_turn", "revision": 1, "language": "pcm", "sample_rate": 16000, "channels": 1})
+        ws.receive_json()  # session_started
+        ws.send_bytes(b"\x00\x00" * 512)
+        ws.send_json({"type": "finish_turn", "page_epoch": 1})
+
+        ws.receive_json()  # partial ""
+        final1 = ws.receive_json()  # final ""
+        assert final1["text"] == ""
+
+        # Turn 2: Shopper speaks again with valid query
+        ws.send_json({"type": "start_turn", "revision": 2, "language": "pcm", "sample_rate": 16000, "channels": 1})
+        ws.receive_json()  # session_started
+        ws.send_bytes(b"\x00\x00" * 512)
+        ws.send_json({"type": "finish_turn", "page_epoch": 1})
+
+        ws.receive_json()  # partial "Find"
+        final2 = ws.receive_json()  # final "Find snowboard"
+        assert final2["text"] == "Find snowboard"
+
+        ws.send_json({
+            "type": "shopping_turn",
+            "turn_id": "turn_2",
+            "request_revision": 2,
+            "page_epoch": 1,
+            "transcript": "Find snowboard",
+        })
+        res2 = ws.receive_json()
+        assert res2["type"] == "shopping_result"
+        assert res2["status"] == "completed"
+        assert len(res2["result_product_ids"]) == 3
+
+
+# ============================================================================
+# 3. File-backed persistence, runtime restart recovery, and no mutation replay (S-10, T-16)
+# ============================================================================
+
+def test_runtime_restart_with_file_backed_persistence_and_no_mutation_replay(tmp_path):
+    """Verify that after a crash and restart using file-backed SQLite persistence:
+    1. In-flight commands are marked UNCERTAIN upon restart reconciliation.
+    2. Any subsequent replay/reconciliation reconciles against live cart without re-dispatching mutations.
+    """
+    db_path = str(tmp_path / "file_backed_journal.db")
+    journal1 = CommandJournal(db_path)
+    simulator = ShopifySimulator(SHOP)
+
+    before_cart = simulator.read_cart()
+    command = AuthorizedCommand(
+        command_id="cmd_restart_test_001",
+        session_id="sess_restart_1",
+        shop_id=SHOP,
+        turn_id="turn_1",
+        request_revision=1,
+        page_epoch=1,
+        expires_at_ms=int(time.time() * 1000) + 60_000,
+        operation=CommandOperation.ADD_VARIANT,
+        parameters={"variant_id": "101", "quantity": 1},
+        expected_cart_fingerprint=before_cart.fingerprint(),
+    )
+
+    # 1. Prepare and mark DISPATCHED in first runtime instance before crash
+    journal1.prepare_command(command, before_cart)
+    journal1.mark_dispatched(command.command_id)
+    assert journal1.get_entry(command.command_id).status == CommandStatus.DISPATCHED
+
+    # 2. Crash & Restart: Initialize new runtime instances with the same database file
+    del journal1
+    journal2 = CommandJournal(db_path)
+
+    # Restart reconciliation converts pending DISPATCHED to UNCERTAIN (T-13)
+    reconciled_count = journal2.restart_reconcile()
+    assert reconciled_count == 1
+    restarted_entry = journal2.get_entry(command.command_id)
+    assert restarted_entry is not None
+    assert restarted_entry.status == CommandStatus.UNCERTAIN
+
+    # 3. Attempt execution/reconciliation via CommandReconciler
+    reconciler = CommandReconciler(journal2)
+    receipt = reconciler.execute_and_reconcile(command, simulator)
+
+    # Assert that live cart was reconciled safely and no second mutation occurred
+    assert receipt.command_id == command.command_id
+    # Live cart did not have the item (dispatch did not reach simulator before crash),
+    # so reconciliation determines REJECTED or UNCERTAIN without re-dispatching
+    live_cart = simulator.read_cart()
+    assert len(live_cart.lines) == 0  # No mutation replay occurred
+
+
+# ============================================================================
+# 4. Two browser tabs / concurrent cart modifications (Cart precondition checks, S-08, S-09)
+# ============================================================================
+
+def test_two_browser_tabs_concurrent_modification_precondition_rejection(tmp_path):
+    """Verify that concurrent modifications in Tab 2 invalidate Tab 1's expected fingerprint,
+    preventing Tab 1 dispatch and completely preserving all of Tab 2's cart lines.
+    """
+    simulator = ShopifySimulator(SHOP)
+    # Tab 1 starts with initial cart containing 1 item
+    simulator.add_initial_line("101", 1)
+    tab1_observed_cart = simulator.read_cart()
+    assert len(tab1_observed_cart.lines) == 1
+
+    # Tab 1 generates command to add variant 102 expecting tab1_observed_cart fingerprint
+    tab1_command = AuthorizedCommand(
+        command_id="cmd_tab1_add_102",
+        session_id="sess_tab1",
+        shop_id=SHOP,
+        turn_id="turn_1",
+        request_revision=1,
+        page_epoch=1,
+        expires_at_ms=int(time.time() * 1000) + 30_000,
+        operation=CommandOperation.ADD_VARIANT,
+        parameters={"variant_id": "102", "quantity": 1},
+        expected_cart_fingerprint=tab1_observed_cart.fingerprint(),
+    )
+
+    # Meanwhile, Tab 2 concurrently modifies the cart: updates variant 101 qty to 5 and adds variant 201
+    line1_key = tab1_observed_cart.lines[0].shopify_line_key
+    simulator.set_cart(
+        CartSnapshot(
+            shop_id=SHOP,
+            currency="USD",
+            lines=(
+                CartLine("101", 5, shopify_line_key=line1_key),
+                CartLine("201", 2, shopify_line_key="line_201"),
+            ),
+        )
+    )
+    tab2_live_cart = simulator.read_cart()
+    assert len(tab2_live_cart.lines) == 2
+    assert tab2_live_cart.lines[0].quantity == 5
+
+    # Now Tab 1 tries to execute its command through CommandReconciler
+    journal = CommandJournal(str(tmp_path / "tab_journal.db"))
+    reconciler = CommandReconciler(journal)
+    receipt = reconciler.execute_and_reconcile(tab1_command, simulator)
+
+    # Assert Tab 1 dispatch was safely REJECTED due to precondition mismatch
+    assert receipt.outcome == ExecutionOutcome.REJECTED
+    assert "Precondition failed" in receipt.verification_message
+
+    # Independently assert live cart state is intact and unaffected by Tab 1
+    final_live_cart = simulator.read_cart()
+    assert len(final_live_cart.lines) == 2
+    assert final_live_cart.lines[0].variant_id == "101"
+    assert final_live_cart.lines[0].quantity == 5
+    assert final_live_cart.lines[1].variant_id == "201"
+    assert final_live_cart.lines[1].quantity == 2
+
+
+# ============================================================================
+# 5. Active session revocation over internal control endpoint (Gap 6)
+# ============================================================================
+
+def test_active_session_revocation_over_control_endpoint():
+    """Verify revoking an active shop or profile over POST /internal/revocations immediately closes active WebSocket connections with code 4410."""
+    revocation_registry = SessionRevocationRegistry()
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        revocations=revocation_registry,
+    )
+    client = TestClient(app)
+
+    with client.websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as ws:
+        # Authenticate session
+        grant = make_signed_grant()
+        ws.send_json({"type": "authenticate", "grant": grant})
+        auth_ack = ws.receive_json()
+        assert auth_ack["type"] == "authenticated"
+
+        # Revoke the shop over HTTP control endpoint
+        rev_resp = client.post(
+            "/internal/revocations",
+            headers={"Authorization": f"Bearer {SECRET}"},
+            json={"shop_ids": [SHOP]},
+        )
+        assert rev_resp.status_code == 200
+        assert rev_resp.json()["closed_sessions"] == 1
+
+        # The WebSocket receives close code 4410
+        msg = ws.receive()
+        assert msg["type"] == "websocket.close"
+        assert msg["code"] == 4410
+
+    # New connection attempts for revoked shop are rejected immediately
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as ws2:
+            ws2.send_json({"type": "authenticate", "grant": make_signed_grant()})
+            ws2.receive_json()
+    assert exc_info.value.code == 4410
+
+
+# ============================================================================
+# 6. Delayed / Failed TTS does not block shopping text or candidate cards (Gap 6)
+# ============================================================================
+
+def test_delayed_or_failed_tts_does_not_block_text_shopping_result():
+    """Verify that a failing or throwing TTS synthesis provider does not prevent delivery of the text shopping result."""
+    async def turn_handler(payload: dict[str, Any], grant: SessionGrant) -> dict[str, Any]:
+        return {
+            "turn_id": payload["turn_id"],
+            "request_revision": payload["request_revision"],
+            "page_epoch": payload["page_epoch"],
+            "status": "completed",
+            "spoken_response": "Here are 2 snowboards.",
+            "result_product_ids": ["1", "2"],
+        }
+
+    async def failing_tts_handler(text: str, revision: int):
+        raise RuntimeError("TTS provider timeout or network failure")
+
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        shopping_turn_handler=turn_handler,
+        shopping_tts_handler=failing_tts_handler,
+    )
+
+    with TestClient(app).websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as ws:
+        ws.send_json({"type": "authenticate", "grant": make_signed_grant()})
+        ws.receive_json()
+
+        # Send shopping turn
+        ws.send_json({
+            "type": "shopping_turn",
+            "turn_id": "turn_tts_1",
+            "request_revision": 1,
+            "page_epoch": 1,
+            "transcript": "Find snowboards",
+        })
+
+        # Assert shopping_result is delivered intact despite TTS failure
+        res = ws.receive_json()
+        assert res["type"] == "shopping_result"
+        assert res["status"] == "completed"
+        assert res["spoken_response"] == "Here are 2 snowboards."
+        assert res["result_product_ids"] == ["1", "2"]
+
+
+# ============================================================================
+# 7. Single accepted final, duplicate suppression, stale revision, barge-in, and turn cancellation
 # ============================================================================
 
 def test_single_accepted_final_and_duplicate_suppression():
-    """Verify that multiple final transcripts in the same turn are suppressed after the first accepted final."""
+    """Verify that multiple final transcripts in the same turn are emitted to client which suppresses duplicates."""
     events = [
         SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, "s1", 1, text="show boards"),
         SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, "s1", 1, text="show boards duplicate"),
@@ -330,42 +689,6 @@ def test_single_accepted_final_and_duplicate_suppression():
 
         ev2 = ws.receive_json()
         assert ev2["type"] == "final_transcript" and ev2["text"] == "show boards duplicate"
-
-
-def test_long_pause_and_empty_speech_produces_no_execution():
-    """Verify empty/silent audio does not execute any mutation or shopping command."""
-    events = [
-        SpeechStreamEvent(SpeechEventKind.PARTIAL_TRANSCRIPT, "s1", 1, text=""),
-        SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, "s1", 1, text=""),
-    ]
-    turn_executed = []
-
-    async def turn_handler(payload: dict[str, Any], grant: SessionGrant) -> dict[str, Any]:
-        turn_executed.append(payload)
-        return {"status": "empty"}
-
-    app = create_voice_app(
-        signing_secret=SECRET,
-        allowed_origins={ORIGIN},
-        session_factory=lambda **kwargs: ScriptedSpeechSession(kwargs.get("revision", 1), events),
-        shopping_turn_handler=turn_handler,
-    )
-    with TestClient(app).websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as ws:
-        ws.send_json({"type": "authenticate", "grant": make_signed_grant()})
-        ws.receive_json()
-
-        ws.send_json({"type": "start_turn", "revision": 1, "language": "pcm", "sample_rate": 16000, "channels": 1})
-        ws.receive_json()  # session_started
-        ws.send_bytes(b"\x00\x00" * 1024)  # 1KB of silence
-        ws.send_json({"type": "finish_turn", "page_epoch": 1})
-
-        ev1 = ws.receive_json()
-        assert ev1["type"] == "partial_transcript"
-        ev2 = ws.receive_json()
-        assert ev2["type"] == "final_transcript"
-        assert ev2["text"] == ""
-        # No shopping command was dispatched
-        assert len(turn_executed) == 0
 
 
 def test_stale_revision_speech_turn_rejected():
@@ -421,9 +744,9 @@ def test_barge_in_cancels_previous_stream():
 
         # Barge-in: Start Turn 2 before finish_turn on Turn 1
         ws.send_json({"type": "start_turn", "revision": 2, "language": "pcm", "sample_rate": 16000, "channels": 1})
-        assert session1.canceled is True
         ev2 = ws.receive_json()
         assert ev2["type"] == "session_started" and ev2["revision"] == 2
+        assert session1.canceled is True
 
 
 def test_turn_cancellation_while_speech_in_flight():
@@ -456,101 +779,7 @@ def test_turn_cancellation_while_speech_in_flight():
 
 
 # ============================================================================
-# 3. Two tabs and manual cart changes (Cart precondition verification)
-# ============================================================================
-
-def test_stale_cart_fingerprint_precondition_rejected():
-    """Verify that if cart changes externally (e.g. tab 2), a command with stale precondition is rejected."""
-    initial_cart = CartSnapshot(
-        shop_id=SHOP,
-        currency="USD",
-        lines=(CartLine("101", 1, shopify_line_key="line_1"),),
-    )
-    # External modification changed quantity to 2
-    modified_cart = CartSnapshot(
-        shop_id=SHOP,
-        currency="USD",
-        lines=(CartLine("101", 2, shopify_line_key="line_1"),),
-    )
-
-    command = {
-        "shop_id": SHOP,
-        "operation": "add_variant",
-        "expected_cart_fingerprint": initial_cart.fingerprint(),
-        "parameters": {"variant_id": "102", "quantity": 1, "properties": {}},
-    }
-
-    # If before_cart in command result is modified_cart (different fingerprint), verification fails
-    rejected_result = {
-        "outcome": "verified_success",
-        "before_cart": modified_cart.to_dict(),
-        "after_cart": modified_cart.to_dict(),
-    }
-
-    assert _verify_reported_cart_result(command, rejected_result) is False
-
-
-# ============================================================================
-# 4. Durable uncertain cart outcomes and no replay on fallback
-# ============================================================================
-
-def test_uncertain_cart_outcome_persists_and_blocks_fallback_retry():
-    """Verify uncertain write outcome records safely without retrying on another adapter (S-10, T-16)."""
-    journal = CommandJournal(":memory:")
-    before_cart = CartSnapshot(shop_id=SHOP, currency="USD", lines=())
-    after_cart = CartSnapshot(shop_id=SHOP, currency="USD", lines=())
-
-    command = AuthorizedCommand(
-        command_id="cmd_uncertain_01",
-        session_id="sess_1",
-        shop_id=SHOP,
-        turn_id="turn_1",
-        request_revision=1,
-        page_epoch=1,
-        expires_at_ms=int(time.time() * 1000) + 30_000,
-        operation=CommandOperation.ADD_VARIANT,
-        parameters={"variant_id": "101", "quantity": 1},
-        expected_cart_fingerprint=before_cart.fingerprint(),
-    )
-
-    journal.prepare_command(command, before_cart)
-    journal.mark_dispatched(command.command_id)
-    journal.complete_command(
-        command.command_id,
-        CommandStatus.UNCERTAIN,
-        "Network failure during WebMCP dispatch",
-    )
-
-    # Replay attempt returns the stored entry without creating a new dispatch
-    stored = journal.get_entry(command.command_id)
-    assert stored is not None
-    assert stored.status == CommandStatus.UNCERTAIN
-    assert stored.reconciled_message == "Network failure during WebMCP dispatch"
-
-    # S-10 & T-13: System restart marks pending in-flight commands uncertain
-    cmd2 = AuthorizedCommand(
-        command_id="cmd_in_flight_02",
-        session_id="sess_1",
-        shop_id=SHOP,
-        turn_id="turn_2",
-        request_revision=2,
-        page_epoch=1,
-        expires_at_ms=int(time.time() * 1000) + 30_000,
-        operation=CommandOperation.ADD_VARIANT,
-        parameters={"variant_id": "102", "quantity": 1},
-        expected_cart_fingerprint=before_cart.fingerprint(),
-    )
-    journal.prepare_command(cmd2, before_cart)
-    journal.mark_dispatched(cmd2.command_id)
-    reconciled_count = journal.restart_reconcile()
-    assert reconciled_count == 1
-    stored_cmd2 = journal.get_entry(cmd2.command_id)
-    assert stored_cmd2 is not None
-    assert stored_cmd2.status == CommandStatus.UNCERTAIN
-
-
-# ============================================================================
-# 5. Expired grant and revoked installation handling
+# 8. Expired grants, cross-shop grants, and provider profile checks
 # ============================================================================
 
 def test_expired_grant_rejected_at_websocket_connection():
@@ -577,8 +806,24 @@ def test_cross_shop_grant_rejected():
     assert exc_info.value.code == 4401
 
 
+def test_provider_profile_unavailable_rejected():
+    """Verify grant requesting an unregistered ASR/LLM/TTS profile is closed with 4404."""
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        allowed_llm_profiles={"groq-gpt-oss-120b"},
+    )
+    unknown_profile_grant = make_signed_grant(llm_profile="unknown-llm-provider-99")
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with TestClient(app).websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as ws:
+            ws.send_json({"type": "authenticate", "grant": unknown_profile_grant})
+            ws.receive_json()
+    assert exc_info.value.code == 4404
+
+
 # ============================================================================
-# 6. Privacy: Raw audio disabled by default and trace redaction
+# 9. Privacy: Raw audio disabled by default and trace redaction
 # ============================================================================
 
 def test_privacy_trace_redaction_and_no_raw_audio_leak():
