@@ -51,7 +51,9 @@
         "set_line_quantity",
         "remove_line",
         "navigate_storefront",
-        "handoff_to_checkout"
+        "handoff_to_checkout",
+        "clear_cart",
+        "manage_orders"
       ]
     },
     "parameters": {

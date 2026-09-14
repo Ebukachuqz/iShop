@@ -350,6 +350,9 @@ class CommandReconciler:
             for l in before_cart.lines
         ]
 
+        if command.operation in (CommandOperation.CLEAR_CART, "clear_cart"):
+            return CartSnapshot(shop_id=before_cart.shop_id, currency=before_cart.currency, lines=())
+
         if command.operation in (CommandOperation.REMOVE_LINE, "remove_line"):
             expected_lines = [
                 l for l in expected_lines

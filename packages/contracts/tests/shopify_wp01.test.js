@@ -331,7 +331,7 @@ describe('WP-01 Shopify Transport & Security Contract Suite (Simulated Mocks)', 
         updateCart: async (input) => { received = input; return { cart: { lines: [] } }; },
       });
       await adapter.updateCart({ operation: 'add_variant', parameters: { variant_id: '123', quantity: 2 } });
-      expect(received).toEqual({ lines: [{ merchandiseId: 'gid://shopify/ProductVariant/123', quantity: 2 }] });
+      assert.deepEqual(received, { lines: [{ merchandiseId: 'gid://shopify/ProductVariant/123', quantity: 2 }] });
     });
 
     test('translates line quantity and removal commands without leaking internal fields', async () => {
@@ -341,7 +341,7 @@ describe('WP-01 Shopify Transport & Security Contract Suite (Simulated Mocks)', 
       });
       await adapter.updateCart({ operation: 'set_line_quantity', parameters: { target_line_key: 'line-1', quantity: 3 } });
       await adapter.updateCart({ operation: 'remove_line', parameters: { target_line_key: 'line-1' } });
-      expect(calls).toEqual([
+      assert.deepEqual(calls, [
         { lines: [{ id: 'line-1', quantity: 3 }] },
         { lines: [{ id: 'line-1', quantity: 0 }] },
       ]);

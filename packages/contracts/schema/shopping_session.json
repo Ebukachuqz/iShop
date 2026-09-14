@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/shopping_session.json",
+  "title": "PersistentShoppingSession",
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "latest_request_revision": {"type": "integer", "minimum": 0},
+    "latest_page_epoch": {"type": "integer", "minimum": 0},
+    "conversation_history": {"type": "array", "maxItems": 16},
+    "result_sets": {"type": "object", "maxProperties": 8},
+    "pending_intents": {"type": "array", "maxItems": 8},
+    "pending_clarification_intent": {"type": ["object", "null"]},
+    "pending_allowed_answers": {"type": "object", "maxProperties": 40},
+    "current_page": {"type": ["object", "null"]},
+    "previous_page": {"type": ["object", "null"]},
+    "tool_observations": {"type": "array", "maxItems": 16}
+  },
+  "required": ["session_id", "latest_request_revision", "latest_page_epoch", "conversation_history", "result_sets", "pending_intents"],
+  "additionalProperties": true
+}

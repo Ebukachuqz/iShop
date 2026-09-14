@@ -85,6 +85,15 @@ export class AjaxCartAdapter {
     return { ok: true, errors: [] };
   }
 
+  async clearCart() {
+    const res = await this.fetch(`${this.baseUrl}/cart/clear.js`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: '{}',
+    });
+    const body = await res.json();
+    if (!res.ok) return { ok: false, errors: [body.description || body.message || `HTTP ${res.status}`] };
+    return { ok: true, errors: [] };
+  }
+
   _normalizeCart(ajaxResponse) {
     const lines = (ajaxResponse.items || []).map((item) => {
       const normProps = {};

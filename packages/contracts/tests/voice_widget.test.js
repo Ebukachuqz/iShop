@@ -98,6 +98,17 @@ test('voice widget sends authenticated turns and suppresses duplicate finals', a
   assert.equal(events[0].authorizes_interpretation, undefined);
 });
 
+test('voice client rejects an incompatible runtime before sending shopping work', () => {
+  const voice = loadVoice();
+  const events = [];
+  const client = new voice.VoiceSessionClient({ url: 'wss://runtime.example/ws', grant: {}, onEvent: (event) => events.push(event) });
+  let closed = false;
+  client.socket = { close: () => { closed = true; }, readyState: 1 };
+  client._receive(JSON.stringify({ type: 'authenticated', protocol_version: '0.9.0', command_schema_version: '1.0.0', tool_registry_version: '1.0.0' }));
+  assert.equal(closed, true);
+  assert.equal(events[0].error_code, 'incompatible_runtime');
+});
+
 test('widget state distinguishes listening, interpretation, failure, and verified completion', () => {
   const { WidgetState } = loadWidgetState();
   const state = new WidgetState();

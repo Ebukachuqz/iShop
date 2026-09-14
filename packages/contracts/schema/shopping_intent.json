@@ -26,7 +26,11 @@
         "update_quantity",
         "remove_from_cart",
         "navigate",
-        "request_checkout"
+        "request_checkout",
+        "cancel_cart",
+        "manage_orders",
+        "store_information",
+        "show_variant"
       ]
     },
     "product_query": {

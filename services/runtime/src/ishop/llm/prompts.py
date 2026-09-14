@@ -49,7 +49,7 @@ You MUST respond ONLY with valid JSON conforming to this schema, with no markdow
 {
   "schema_version": "1.0.0",
   "intent_id": "string",
-  "operation": "search" | "browse" | "describe_product" | "check_availability" | "view_cart" | "add_to_cart" | "update_quantity" | "remove_from_cart" | "navigate" | "request_checkout",
+  "operation": "search" | "browse" | "describe_product" | "check_availability" | "view_cart" | "add_to_cart" | "update_quantity" | "remove_from_cart" | "navigate" | "request_checkout" | "cancel_cart" | "manage_orders" | "store_information" | "show_variant",
   "product_query": "string" | null,
   "selected_variant_attributes": { "attribute_name": "value" },
   "quantity_change": { "mode": "set" | "increment", "value": integer } | null,

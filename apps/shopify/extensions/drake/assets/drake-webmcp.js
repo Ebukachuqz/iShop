@@ -31,6 +31,24 @@ export class WebMcpAdapter {
     return Array.isArray(tools) ? tools : [];
   }
 
+  async invokeTool(name, argumentsObject = {}) {
+    const tools = await this.getDeclaredTools();
+    const descriptor = tools.find((tool) => tool.name === name);
+    if (!descriptor) throw new Error(`WebMCP ${name} tool is not declared`);
+    const raw = await this.modelContext.executeTool(descriptor, JSON.stringify(argumentsObject));
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  }
+
+  searchCatalog(args) { return this.invokeTool('search_catalog', args); }
+  browseStore(args = {}) { return this.invokeTool('browse_store', args); }
+  getProduct(args) { return this.invokeTool('get_product', args); }
+  showVariant(args) { return this.invokeTool('show_variant', args); }
+  getCart() { return this.invokeTool('get_cart', {}); }
+  cancelCart(args = {}) { return this.invokeTool('cancel_cart', args); }
+  proceedToCheckout(args = {}) { return this.invokeTool('proceed_to_checkout', args); }
+  manageOrders(args = {}) { return this.invokeTool('manage_orders', args); }
+  searchShopPoliciesAndFaqs(args) { return this.invokeTool('search_shop_policies_and_faqs', args); }
+
   async getCartToolDescriptor() {
     const tools = await this.getDeclaredTools();
     return tools.find((t) => t.name === 'get_cart') || null;

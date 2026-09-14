@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[..., RealtimeSpeechSession]
 ShoppingTurnHandler = Callable[[dict[str, Any], SessionGrant], Any]
+ShoppingTtsHandler = Callable[[str, int], Any]
 
 
 class RevocationRequest(BaseModel):
@@ -103,6 +104,7 @@ def create_voice_app(
     shopping_turn_handler: ShoppingTurnHandler | None = None,
     clock_ms: Callable[[], int] | None = None,
     command_journal: CommandJournal | None = None,
+    shopping_tts_handler: ShoppingTtsHandler | None = None,
 ) -> FastAPI:
     """Create the minimal authenticated voice transport used by WP-02."""
     if len(signing_secret) < 32:
@@ -177,6 +179,9 @@ def create_voice_app(
                     "type": "authenticated",
                     "session_id": grant.anonymous_session_id,
                     "config_revision": grant.config_revision,
+                    "protocol_version": "1.0.0",
+                    "command_schema_version": "1.0.0",
+                    "tool_registry_version": "1.0.0",
                 }
             )
 
@@ -299,6 +304,14 @@ def create_voice_app(
                                 except Exception:
                                     logger.exception("Failed to persist authorized command")
                         await websocket.send_json({"type": "shopping_result", **result})
+                        if shopping_tts_handler is not None and result.get("spoken_response"):
+                            chunks = await shopping_tts_handler(str(result["spoken_response"]), int(payload["request_revision"]))
+                            if chunks:
+                                await websocket.send_json({
+                                    "type": "shopping_tts", "turn_id": payload["turn_id"],
+                                    "request_revision": payload["request_revision"], "page_epoch": payload["page_epoch"],
+                                    "tts_audio_chunks": chunks,
+                                })
                     except Exception:
                         logger.exception("Shopping turn handler failed")
                         await _send_error(websocket, "shopping_runtime_failed")
@@ -306,6 +319,20 @@ def create_voice_app(
                     command_id = payload.get("command_id")
                     result = payload.get("result")
                     pending = pending_commands.get(str(command_id))
+                    if pending is None and journal is not None and command_id:
+                        entry = journal.get_entry(str(command_id))
+                        if entry and entry.session_id == grant.anonymous_session_id and entry.shop_id == grant.shop_id:
+                            pending = {
+                                "request_revision": entry.request_revision,
+                                "command": {
+                                    "command_id": entry.command_id, "session_id": entry.session_id,
+                                    "shop_id": entry.shop_id, "turn_id": entry.turn_id,
+                                    "request_revision": entry.request_revision, "page_epoch": entry.page_epoch,
+                                    "operation": entry.operation,
+                                    "parameters": json.loads(entry.parameters_json or "{}"),
+                                    "expected_cart_fingerprint": entry.expected_cart_fingerprint,
+                                },
+                            }
                     if not pending or not isinstance(result, dict):
                         await _send_error(websocket, "unexpected_command_result")
                         continue
@@ -390,7 +417,7 @@ def _make_sahara_session(**kwargs: Any) -> RealtimeSpeechSession:
 
 def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> None:
     required = {"type", "turn_id", "request_revision", "page_epoch", "transcript", "evidence", "current_cart"}
-    allowed = required | {"current_product_id"}
+    allowed = required | {"current_product_id", "page_context", "available_tools", "tool_observation"}
     if not required <= set(payload) or not set(payload) <= allowed:
         raise ValueError("Invalid shopping turn fields")
     if payload["type"] != "shopping_turn":
@@ -410,6 +437,26 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
             raise ValueError(f"Invalid {field_name}")
         if payload[field_name].get("shop_id") != grant.shop_id:
             raise ValueError(f"{field_name} shop mismatch")
+    page_context = payload.get("page_context")
+    if page_context is not None:
+        if not isinstance(page_context, dict) or set(page_context) - {"page_id", "path", "previous_path", "product_id", "variant_id", "observed_at_ms"}:
+            raise ValueError("Invalid page context")
+        path = page_context.get("path")
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
+            raise ValueError("Invalid page path")
+    available_tools = payload.get("available_tools", [])
+    if not isinstance(available_tools, list) or len(available_tools) > 20 or any(not isinstance(name, str) for name in available_tools):
+        raise ValueError("Invalid available tools")
+    observation = payload.get("tool_observation")
+    if observation is not None:
+        if not isinstance(observation, dict) or set(observation) - {"tool", "ok", "source", "data", "error", "observed_at_ms"}:
+            raise ValueError("Invalid tool observation")
+        if not isinstance(observation.get("tool"), str) or not isinstance(observation.get("ok"), bool):
+            raise ValueError("Invalid tool observation identity")
+        if not isinstance(observation.get("data", {}), dict):
+            raise ValueError("Invalid tool observation data")
+        if len(json.dumps(observation, separators=(",", ":"))) > 100_000:
+            raise ValueError("Tool observation is too large")
 
 
 def _verify_reported_cart_result(command: dict[str, Any], result: dict[str, Any]) -> bool:
@@ -425,6 +472,7 @@ def _verify_reported_cart_result(command: dict[str, Any], result: dict[str, Any]
         expected_outcomes = {
             "navigate_storefront": "navigation_handoff",
             "handoff_to_checkout": "human_handoff",
+            "manage_orders": "navigation_handoff",
         }
         if operation in expected_outcomes:
             return result.get("outcome") == expected_outcomes[operation] and after.is_equivalent(before)
@@ -440,7 +488,9 @@ def _verify_reported_cart_result(command: dict[str, Any], result: dict[str, Any]
                 return line.shopify_line_key == target_key or line.canonical_key == target_key
             return bool(variant_id and line.variant_id == variant_id)
 
-        if operation == "remove_line":
+        if operation == "clear_cart":
+            lines = []
+        elif operation == "remove_line":
             lines = [line for line in lines if not matches(line)]
         elif operation == "set_line_quantity":
             lines = [

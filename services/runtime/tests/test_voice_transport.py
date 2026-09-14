@@ -409,6 +409,19 @@ def test_command_result_label_cannot_override_wrong_cart_state():
     assert _verify_reported_cart_result(command, result) is False
 
 
+def test_clear_cart_ack_requires_an_independently_observed_empty_cart():
+    before = CartSnapshot.from_dict({"shop_id": SHOP, "currency": "NGN", "lines": [
+        {"line_key": "line-1", "variant_id": "variant_1", "quantity": 2}
+    ]})
+    command = {"shop_id": SHOP, "operation": "clear_cart",
+        "expected_cart_fingerprint": before.fingerprint(), "parameters": {"explicit_whole_cart": True}}
+    verified = {"outcome": "verified_success", "before_cart": before.to_dict(),
+        "after_cart": {"shop_id": SHOP, "currency": "NGN", "lines": []}}
+    assert _verify_reported_cart_result(command, verified) is True
+    verified["after_cart"] = before.to_dict()
+    assert _verify_reported_cart_result(command, verified) is False
+
+
 def test_shopping_turn_rejects_cross_tenant_evidence_before_handler():
     called = []
 

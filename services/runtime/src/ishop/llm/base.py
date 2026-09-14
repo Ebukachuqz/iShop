@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from ishop.domain.intent import ShoppingIntent
+from ishop.domain.intent import IntentOperation, ShoppingIntent
 
 
 @dataclass(frozen=True)
@@ -126,6 +126,44 @@ class LlmToolSelectionResult:
     raw_response_text: str
 
 
+def tool_arguments_for_intent(intent: ShoppingIntent, tool_name: str) -> dict[str, Any]:
+    """Build provider-neutral proposal arguments without minting store identifiers."""
+    query = (intent.product_query or intent.supporting_transcript_span or "").strip()
+    if tool_name == "search_catalog":
+        return {"query": query, "resource_types": ["product"], "limit": 8}
+    if tool_name == "browse_store":
+        return ({"mode": "collection_products", "collection_reference": query, "limit": 8}
+                if intent.product_query else {"mode": "list_collections", "limit": 8})
+    if tool_name == "get_product":
+        return {"product_reference": query}
+    if tool_name == "show_variant":
+        arguments: dict[str, Any] = {"product_reference": query}
+        if intent.selected_variant_attributes:
+            arguments["options"] = dict(intent.selected_variant_attributes)
+        return arguments
+    if tool_name == "get_cart" or tool_name in {"proceed_to_checkout", "manage_orders"}:
+        return {}
+    if tool_name == "update_cart":
+        operation = {
+            IntentOperation.ADD_TO_CART: "add",
+            IntentOperation.UPDATE_QUANTITY: "set_quantity",
+            IntentOperation.REMOVE_FROM_CART: "remove",
+        }[intent.operation]
+        arguments = {"operation": operation}
+        if query:
+            arguments["product_reference"] = query
+        if intent.selected_variant_attributes:
+            arguments["options"] = dict(intent.selected_variant_attributes)
+        if intent.quantity_change is not None:
+            arguments["quantity"] = intent.quantity_change.value
+        return arguments
+    if tool_name == "cancel_cart":
+        return {"explicit_whole_cart": True}
+    if tool_name == "search_shop_policies_and_faqs":
+        return {"query": query, "limit": 5}
+    return {}
+
+
 class LlmProvider(abc.ABC):
     """Provider-neutral interface for LLM shopping reasoning."""
 
@@ -154,11 +192,13 @@ class LlmProvider(abc.ABC):
             IntentOperation.VIEW_CART: "get_cart", IntentOperation.ADD_TO_CART: "update_cart",
             IntentOperation.UPDATE_QUANTITY: "update_cart", IntentOperation.REMOVE_FROM_CART: "update_cart",
             IntentOperation.NAVIGATE: "get_product", IntentOperation.REQUEST_CHECKOUT: "proceed_to_checkout",
+            IntentOperation.CANCEL_CART: "cancel_cart", IntentOperation.MANAGE_ORDERS: "manage_orders",
+            IntentOperation.STORE_INFORMATION: "search_shop_policies_and_faqs", IntentOperation.SHOW_VARIANT: "show_variant",
         }
         name = mapping[request.intent.operation]
-        arguments: dict[str, Any] = {"operation": request.intent.operation.value}
-        if request.intent.product_query:
-            arguments["query"] = request.intent.product_query
+        if request.intent.operation == IntentOperation.BROWSE and request.intent.product_query:
+            name = "search_catalog"
+        arguments = tool_arguments_for_intent(request.intent, name)
         return LlmToolSelectionResult(name, arguments, "Provider compatibility selection", "")
 
     @abc.abstractmethod

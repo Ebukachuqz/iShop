@@ -144,7 +144,9 @@ class CartLine:
             quantity=int(data["quantity"]),
             selling_plan_id=data.get("selling_plan_id"),
             properties=data.get("properties") or {},
-            shopify_line_key=data.get("shopify_line_key"),
+            # Browser adapters expose Shopify's ephemeral locator as line_key;
+            # persisted/runtime snapshots use the explicit shopify_line_key name.
+            shopify_line_key=data.get("shopify_line_key") or data.get("line_key"),
         )
 
 
@@ -229,6 +231,8 @@ class CommandOperation(str, Enum):
     REMOVE_LINE = "remove_line"
     NAVIGATE_STOREFRONT = "navigate_storefront"
     HANDOFF_TO_CHECKOUT = "handoff_to_checkout"
+    CLEAR_CART = "clear_cart"
+    MANAGE_ORDERS = "manage_orders"
 
 
 FORBIDDEN_COMMAND_NAMES = {
@@ -240,8 +244,6 @@ FORBIDDEN_COMMAND_NAMES = {
     "execute_script",
     "eval",
     "arbitrary_url",
-    "clear_cart",
-    "manage_orders",
 }
 
 

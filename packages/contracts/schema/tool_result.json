@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/tool_result.json",
+  "title": "ToolObservation",
+  "type": "object",
+  "properties": {
+    "tool": {"type": "string"},
+    "ok": {"type": "boolean"},
+    "source": {"type": "string", "maxLength": 80},
+    "data": {"type": "object"},
+    "error": {"type": ["string", "null"], "maxLength": 300},
+    "observed_at_ms": {"type": "integer", "minimum": 1}
+  },
+  "required": ["tool", "ok", "source", "data", "observed_at_ms"],
+  "additionalProperties": false
+}

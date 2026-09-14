@@ -14,9 +14,43 @@ function variantList(product) {
   return [];
 }
 
+function safeStoreUrl(value) {
+  if (!value) return null;
+  try {
+    const base = typeof window !== 'undefined' ? window.location.origin : 'https://storefront.invalid';
+    const parsed = new URL(String(value), base);
+    return parsed.origin === base ? `${parsed.pathname}${parsed.search}` : null;
+  } catch (_) { return null; }
+}
+
+function normalizeCollections(payload) {
+  const source = payload?.collections || payload?.items || payload?.results?.collections || payload?.data?.collections || [];
+  const values = Array.isArray(source) ? source : (Array.isArray(source?.nodes) ? source.nodes : []);
+  return values.slice(0, 20).map((item) => ({
+    id: String(item.id || item.handle || ''), title: String(item.title || item.name || '').slice(0, 200),
+    handle: item.handle ? String(item.handle) : null, url: safeStoreUrl(item.url || (item.handle ? `/collections/${item.handle}` : null)),
+  })).filter((item) => item.id && item.title);
+}
+
+function normalizePolicyEntries(payload) {
+  const source = payload?.entries || payload?.results || payload?.items || payload?.data?.entries || payload?.content || [];
+  const values = Array.isArray(source) ? source : [];
+  return values.slice(0, 10).map((item) => {
+    const value = item?.type === 'text' ? { text: item.text } : item;
+    return {
+      title: String(value?.title || value?.name || 'Store policy').slice(0, 120),
+      text: String(value?.text || value?.content || value?.excerpt || '').replace(/\s+/g, ' ').slice(0, 2000),
+      url: safeStoreUrl(value?.url || value?.source_url || value?.sourceUrl),
+    };
+  }).filter((item) => item.text && item.url);
+}
+
 function decimalPrice(value) {
-  if (value && typeof value === 'object') return String(value.amount ?? value.value ?? '0');
-  return String(value ?? '0');
+  const raw = value && typeof value === 'object' ? (value.amount ?? value.value) : value;
+  if (raw === null || raw === undefined || raw === '' || !Number.isFinite(Number(raw))) {
+    throw new Error('catalog_price_unavailable');
+  }
+  return String(raw);
 }
 
 function normalizeProductJsonPrices(products) {
@@ -74,13 +108,24 @@ export class WebMcpCatalogAdapter {
   isAvailable() {
     return Boolean(this.modelContext?.getTools && this.modelContext?.executeTool);
   }
+  async getDeclaredTools() {
+    if (!this.isAvailable()) return [];
+    const tools = await this.modelContext.getTools();
+    return Array.isArray(tools) ? tools : [];
+  }
+  async hasTool(name) {
+    return (await this.getDeclaredTools()).some((tool) => tool?.name === name);
+  }
+  async invoke(name, args = {}) {
+    const tools = await this.getDeclaredTools();
+    const descriptor = tools.find((tool) => tool?.name === name);
+    if (!descriptor) throw new Error(`webmcp_${name}_unavailable`);
+    const raw = await this.modelContext.executeTool(descriptor, JSON.stringify(args));
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  }
   async search(query, limit = 5) {
     if (!this.isAvailable()) throw new Error('webmcp_catalog_unavailable');
-    const tools = await this.modelContext.getTools();
-    const descriptor = tools.find((tool) => tool.name === 'search_catalog');
-    if (!descriptor) throw new Error('webmcp_search_catalog_unavailable');
-    const raw = await this.modelContext.executeTool(descriptor, JSON.stringify({ query, limit }));
-    const payload = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const payload = await this.invoke('search_catalog', { query, limit });
     return normalizeCatalogProducts(payload);
   }
 }
@@ -121,6 +166,24 @@ export class AjaxCatalogAdapter {
     normalizeProductJsonPrices([raw]);
     return normalizeCatalogProducts({ products: [raw] }, { currency: this.currency })[0] || null;
   }
+
+  async browse(args = {}) {
+    const limit = Math.min(20, Math.max(1, Number(args.limit || 8)));
+    if (args.mode === 'list_collections') {
+      const response = await this.fetch(`${this.baseUrl}/collections.json?limit=${limit}`, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(`collection_list_failed_${response.status}`);
+      const raw = await response.json();
+      return { collections: normalizeCollections(raw), products: [] };
+    }
+    const reference = String(args.collection_reference || '').trim();
+    if (!reference) throw new Error('collection_reference_required');
+    const handle = reference.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const response = await this.fetch(`${this.baseUrl}/collections/${encodeURIComponent(handle)}/products.json?limit=${limit}`, { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error(`collection_products_failed_${response.status}`);
+    const raw = await response.json();
+    normalizeProductJsonPrices(raw.products || []);
+    return { collections: [], products: normalizeCatalogProducts(raw, { currency: this.currency }) };
+  }
 }
 
 export class StorefrontCatalog {
@@ -148,5 +211,46 @@ export class StorefrontCatalog {
       }
     }
     return this.ajax.getByHandle(handle);
+  }
+
+  async getAvailableTools() {
+    const names = new Set(['search_catalog', 'browse_store', 'get_product']);
+    if (this.webMcp.isAvailable() && await this.webMcp.hasTool('search_shop_policies_and_faqs')) names.add('search_shop_policies_and_faqs');
+    return [...names];
+  }
+
+  async executeTool(request, page = {}) {
+    const name = request?.name;
+    const args = request?.arguments || {};
+    const observedAt = Date.now();
+    try {
+      if (name === 'search_catalog') {
+        const result = await this.search(String(args.query || ''), Number(args.limit || 8));
+        return { tool: name, ok: true, source: result.source, data: { products: result.products, coverage: 'bounded' }, observed_at_ms: observedAt };
+      }
+      if (name === 'get_product') {
+        let product = null;
+        const reference = String(args.product_reference || '');
+        if (page.currentProductHandle) product = await this.getByHandle(page.currentProductHandle);
+        if (!product) product = (await this.search(reference, 8)).products.find((item) => item.title.toLowerCase() === reference.toLowerCase()) || null;
+        return { tool: name, ok: true, source: 'storefront_product', data: { products: product ? [product] : [], coverage: product ? 'exact' : 'none' }, observed_at_ms: observedAt };
+      }
+      if (name === 'browse_store') {
+        if (this.webMcp.isAvailable() && await this.webMcp.hasTool(name)) {
+          const raw = await this.webMcp.invoke(name, args);
+          return { tool: name, ok: true, source: 'native_webmcp', data: { products: normalizeCatalogProducts(raw), collections: normalizeCollections(raw), coverage: 'provider_reported' }, observed_at_ms: observedAt };
+        }
+        const result = await this.ajax.browse(args);
+        return { tool: name, ok: true, source: 'ajax_storefront', data: { ...result, coverage: 'bounded' }, observed_at_ms: observedAt };
+      }
+      if (name === 'search_shop_policies_and_faqs') {
+        if (!this.webMcp.isAvailable() || !(await this.webMcp.hasTool(name))) throw new Error('store_policy_tool_unavailable');
+        const raw = await this.webMcp.invoke(name, args);
+        return { tool: name, ok: true, source: 'native_webmcp', data: { entries: normalizePolicyEntries(raw), coverage: 'provider_reported' }, observed_at_ms: observedAt };
+      }
+      throw new Error('unsupported_read_tool');
+    } catch (error) {
+      return { tool: String(name || ''), ok: false, source: 'storefront', data: {}, error: String(error?.message || error).slice(0, 300), observed_at_ms: observedAt };
+    }
   }
 }

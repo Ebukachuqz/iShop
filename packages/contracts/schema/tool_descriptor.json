@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/tool_descriptor.json",
+  "title": "QualifiedToolDescriptor",
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "enum": ["search_catalog", "browse_store", "get_product", "show_variant", "get_cart", "update_cart", "cancel_cart", "proceed_to_checkout", "manage_orders", "search_shop_policies_and_faqs"]},
+    "version": {"const": "1.0.0"},
+    "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "input_schema": {"type": "object"},
+    "side_effect": {"enum": ["read", "mutation", "navigation"]}
+  },
+  "required": ["name", "version", "description", "input_schema", "side_effect"],
+  "additionalProperties": false
+}

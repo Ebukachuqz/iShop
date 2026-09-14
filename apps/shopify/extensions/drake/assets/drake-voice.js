@@ -75,8 +75,8 @@
       this.onEvent({ type: "turn_canceled", revision: this.revision });
     }
 
-    close() {
-      this.cancelTurn();
+    close(options) {
+      if (!options || options.cancel !== false) this.cancelTurn();
       if (this.socket) this.socket.close();
       this.socket = null;
     }
@@ -89,6 +89,11 @@
     _receive(raw) {
       let event;
       try { event = JSON.parse(raw); } catch (_) { return; }
+      if (event.type === "authenticated" && (event.protocol_version !== "1.0.0" || event.command_schema_version !== "1.0.0" || event.tool_registry_version !== "1.0.0")) {
+        this.onEvent({ type: "error", error_code: "incompatible_runtime", revision: this.revision });
+        this.close({ cancel: false });
+        return;
+      }
       const revision = Number(event.request_revision || event.revision || this.revision);
       if (revision < this.revision) return;
       if (event.type === "final_transcript") {

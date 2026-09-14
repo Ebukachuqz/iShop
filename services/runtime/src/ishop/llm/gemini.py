@@ -24,6 +24,8 @@ from ishop.llm.base import (
     LlmProfile,
     LlmProvider,
     LlmProviderError,
+    LlmToolSelectionRequest,
+    LlmToolSelectionResult,
     LlmUsage,
 )
 from ishop.llm.prompts import (
@@ -180,6 +182,43 @@ class GeminiLlmProvider(LlmProvider):
             usage=usage,
             profile_id=self.profile.profile_id,
         )
+
+    async def select_tool(self, request: LlmToolSelectionRequest) -> LlmToolSelectionResult:
+        """Use the same configured Gemini model for the explicit selection stage."""
+        if not self._profile.enabled or not self._api_key:
+            raise LlmProviderError("Gemini tool selection is unavailable", self.profile.profile_id)
+        prompt = (
+            "Select exactly one qualified shopping tool for the validated intent. "
+            "Return JSON with tool_name, arguments, and rationale. Do not invent identifiers or tools.\n"
+            f"Validated intent: {json.dumps(request.intent.to_dict())}\n"
+            f"Resolved context: {json.dumps(dict(request.resolved_context))}\n"
+            f"Qualified tools: {json.dumps(list(request.qualified_tools), separators=(',', ':'))}"
+        )
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"response_mime_type": "application/json", "temperature": 0.0},
+        }
+        url = f"{GEMINI_API_BASE}/{self._model_name}:generateContent?key={self._api_key}"
+        try:
+            body = await asyncio.to_thread(
+                _http_post_json, url, json.dumps(payload).encode("utf-8"),
+                {"Content-Type": "application/json"}, 15.0,
+            )
+            raw = json.loads(body)["candidates"][0]["content"]["parts"][0]["text"]
+            data = json.loads(raw)
+            name = str(data["tool_name"])
+            arguments = data.get("arguments")
+            if not isinstance(arguments, dict):
+                raise ValueError("arguments must be an object")
+            allowed = {str(tool["name"]) for tool in request.qualified_tools}
+            if name not in allowed:
+                raise ValueError("tool is not qualified")
+            return LlmToolSelectionResult(name, arguments, str(data.get("rationale", "")), raw)
+        except Exception as exc:
+            raise LlmProviderError(
+                f"Failed to select a qualified tool: {exc}", self.profile.profile_id,
+                retryable=True, cause=exc,
+            ) from exc
 
     async def generate_grounded_response(self, context: GroundedResponseContext) -> str:
         if not self._profile.enabled or not self._api_key:

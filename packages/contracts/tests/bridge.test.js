@@ -387,4 +387,28 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
     assert.equal(writes, 0);
     assert.match(receipt.errors[0], /changed before dispatch/i);
   });
+
+  test('clears the whole cart only through explicit Ajax authorization and verifies empty state', async () => {
+    let cart = { shop_id: 'store.myshopify.com', currency: 'USD', lines: [{ variant_id: 'v1', quantity: 1, properties: {} }] };
+    let clears = 0;
+    const bridge = new StorefrontBridge({
+      ajaxAdapter: { readCart: async () => cart, clearCart: async () => { clears += 1; cart = { ...cart, lines: [] }; return { ok: true, errors: [] }; } },
+      webMcpAdapter: { isAvailable: () => false }, actionsAdapter: { isAvailable: () => true, updateCart: async () => { throw new Error('must not use actions'); } },
+    });
+    const receipt = await bridge.executeCommand({ operation: 'clear_cart', parameters: { explicit_whole_cart: true } });
+    assert.equal(receipt.outcome, 'verified_success');
+    assert.equal(clears, 1);
+  });
+
+  test('manage orders only navigates to the trusted Shopify account path', async () => {
+    const visited = [];
+    const cart = { shop_id: 'store.myshopify.com', currency: 'USD', lines: [] };
+    const bridge = new StorefrontBridge({
+      ajaxAdapter: { readCart: async () => cart }, webMcpAdapter: { isAvailable: () => false },
+      actionsAdapter: { isAvailable: () => false }, navigate: (url) => visited.push(url), origin: 'https://store.example',
+    });
+    const receipt = await bridge.executeCommand({ operation: 'manage_orders', parameters: { url: '/account/orders' } });
+    assert.equal(receipt.outcome, 'navigation_handoff');
+    assert.equal(visited[0], 'https://store.example/account/orders');
+  });
 });

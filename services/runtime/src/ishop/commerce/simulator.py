@@ -233,6 +233,11 @@ class ShopifySimulator:
         elif command.operation == CommandOperation.READ_CART:
             pass  # read only
 
+        elif command.operation == CommandOperation.CLEAR_CART:
+            if params.get("explicit_whole_cart") is not True:
+                return SimulationResult(status_code=400, user_errors=["Whole-cart clearing requires explicit scope"], cart_snapshot=self.read_cart())
+            self._lines = []
+
         else:
             return SimulationResult(
                 status_code=400,

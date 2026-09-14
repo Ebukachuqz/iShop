@@ -92,7 +92,15 @@ class ControllerSessionState:
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     active_search_query: str | None = None
     active_search_product_ids: tuple[str, ...] = ()
+    active_result_set_id: str | None = None
+    result_sets: dict[str, dict[str, Any]] = field(default_factory=dict)
+    selected_product_id: str | None = None
+    active_constraints: dict[str, Any] = field(default_factory=dict)
     pending_clarification_intent: ShoppingIntent | None = None
+    pending_allowed_answers: dict[str, dict[str, str]] = field(default_factory=dict)
+    current_page: dict[str, Any] | None = None
+    previous_page: dict[str, Any] | None = None
+    tool_observations: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,10 +117,18 @@ class ControllerSessionState:
             "conversation_history": list(self.conversation_history),
             "active_search_query": self.active_search_query,
             "active_search_product_ids": list(self.active_search_product_ids),
+            "active_result_set_id": self.active_result_set_id,
+            "result_sets": dict(self.result_sets),
+            "selected_product_id": self.selected_product_id,
+            "active_constraints": dict(self.active_constraints),
             "pending_clarification_intent": (
                 self.pending_clarification_intent.to_dict()
                 if self.pending_clarification_intent else None
             ),
+            "pending_allowed_answers": dict(self.pending_allowed_answers),
+            "current_page": self.current_page,
+            "previous_page": self.previous_page,
+            "tool_observations": list(self.tool_observations),
         }
 
     @classmethod
@@ -132,7 +148,17 @@ class ControllerSessionState:
             conversation_history=list(data.get("conversation_history", [])),
             active_search_query=data.get("active_search_query"),
             active_search_product_ids=tuple(str(value) for value in data.get("active_search_product_ids", [])),
+            active_result_set_id=data.get("active_result_set_id"),
+            result_sets=dict(data.get("result_sets", {})),
+            selected_product_id=data.get("selected_product_id"),
+            active_constraints=dict(data.get("active_constraints", {})),
             pending_clarification_intent=(ShoppingIntent.from_dict(pending_raw) if pending_raw else None),
+            pending_allowed_answers={str(key): {str(k): str(v) for k, v in value.items()}
+                                     for key, value in data.get("pending_allowed_answers", {}).items()
+                                     if isinstance(value, dict)},
+            current_page=data.get("current_page"),
+            previous_page=data.get("previous_page"),
+            tool_observations=list(data.get("tool_observations", []))[-16:],
         )
 
 
@@ -155,6 +181,8 @@ class ControllerTurnResult:
     evidence_query: str | None = None
     result_product_ids: tuple[str, ...] = ()
     selected_tool: str | None = None
+    result_set_id: str | None = None
+    tool_request: dict[str, Any] | None = None
 
 
 class ShoppingController:
@@ -236,6 +264,9 @@ class ShoppingController:
         current_cart: CartSnapshot,
         client: ShopifyClient | None = None,
         current_product_id: str | None = None,
+        page_context: dict[str, Any] | None = None,
+        available_tools: set[str] | None = None,
+        tool_observation: dict[str, Any] | None = None,
         now_ms: int | None = None,
     ) -> ControllerTurnResult:
         """Handle an accepted final transcript through LLM reasoning, resolution, and execution."""
@@ -261,6 +292,9 @@ class ShoppingController:
         sess.active_turn_id = turn_id
         sess.latest_request_revision = max(sess.latest_request_revision, request_revision)
         sess.latest_page_epoch = max(sess.latest_page_epoch, page_epoch)
+        if page_context and page_context != sess.current_page:
+            sess.previous_page = sess.current_page
+            sess.current_page = dict(page_context)
         pending_key = (turn_id, request_revision)
         for key in tuple(sess.pending_intents):
             if key != pending_key and key[1] < request_revision:
@@ -293,7 +327,7 @@ class ShoppingController:
         ]
         cart_summary_str = "; ".join(cart_lines_desc) if cart_lines_desc else "Empty"
 
-        is_resume = pending_key in sess.pending_intents and evidence.query is not None
+        is_resume = pending_key in sess.pending_intents
         if not is_resume:
             sess.conversation_history.append({"role": "user", "content": transcript.strip()})
             sess.conversation_history = sess.conversation_history[-8:]
@@ -337,6 +371,7 @@ class ShoppingController:
                     spoken_response="I had trouble processing that shopping request. Could you rephrase it?",
                     reason=f"LLM interpretation failure: {err_reason}",
                 )
+
             intent = intent_result.intent
 
             is_invalid, status, reason = self._check_turn_staleness(
@@ -351,17 +386,31 @@ class ShoppingController:
                     reason=f"Aborted after async reasoning: {reason}",
                 )
 
+        normalized_transcript = transcript.strip().casefold()
+        if normalized_transcript in {"cancel", "cancel that", "stop", "never mind", "nevermind"}:
+            sess = self.get_session_state(session_id)
+            sess.pending_clarification_intent = None
+            sess.pending_allowed_answers.clear()
+            sess.pending_intents.clear()
+            return ControllerTurnResult(
+                session_id=session_id, turn_id=turn_id, request_revision=request_revision,
+                page_epoch=page_epoch, status="cancelled", spoken_response="Okay, I cancelled that pending request.",
+                reason="Explicit pending-turn cancellation; cart unchanged",
+            )
+
         lower_transcript = transcript.casefold()
         pending_clarification = sess.pending_clarification_intent
         starts_new_read = any(
             re.search(rf"\b{word}\b", lower_transcript)
-            for word in ("find", "search", "show", "browse", "compare", "describe")
+            for word in ("find", "search", "show", "browse", "compare", "describe", "open")
         )
         if pending_clarification is not None and not starts_new_read:
             answer = transcript.strip().casefold()
-            matched_attributes: dict[str, str] = {}
+            matched_attributes: dict[str, str] = dict(sess.pending_allowed_answers.get(answer, {}))
             for product in evidence.products.values():
-                if pending_clarification.product_query and not product_title_matches(pending_clarification.product_query, product.title):
+                if (pending_clarification.product_query
+                        and pending_clarification.product_query != product.product_id
+                        and not product_title_matches(pending_clarification.product_query, product.title)):
                     continue
                 for variant in product.variants:
                     for key, value in variant.selected_options.items():
@@ -420,6 +469,39 @@ class ShoppingController:
         if asks_for_result_ranking and not intent.product_query and sess.active_search_query:
             intent = replace(intent, product_query=sess.active_search_query)
 
+        ordinal_match = re.search(
+            r"\b(?:choose|result|option|item|number)\s*(\d+)\b|\b(\d+)(?:st|nd|rd|th)\s+(?:one|result|item)\b",
+            lower_transcript,
+        )
+        word_ordinals = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+                         "sixth": 6, "seventh": 7, "eighth": 8}
+        ordinal = int(ordinal_match.group(1) or ordinal_match.group(2)) if ordinal_match else next(
+            (value for word, value in word_ordinals.items() if re.search(rf"\b{word}\b", lower_transcript)), None
+        )
+        if ordinal is not None:
+            product_ids = sess.active_search_product_ids
+            if ordinal < 1 or ordinal > len(product_ids):
+                return ControllerTurnResult(
+                    session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                    "That result number is no longer available. Please choose from the current results.", intent,
+                    reason="Ordinal reference is outside the active immutable result set",
+                    clarification_options=tuple(str(index) for index in range(1, len(product_ids) + 1)),
+                )
+            sess.selected_product_id = product_ids[ordinal - 1]
+            intent = replace(intent, product_query=sess.selected_product_id,
+                             unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"))
+
+        if intent.operation in {IntentOperation.SEARCH, IntentOperation.BROWSE}:
+            reset_budget = any(phrase in lower_transcript for phrase in ("no budget", "remove the price limit", "any price", "reset price"))
+            changes_subject = bool(starts_new_read and intent.product_query and sess.active_search_query
+                                   and intent.product_query.casefold() != sess.active_search_query.casefold())
+            if reset_budget or changes_subject:
+                sess.active_constraints.pop("budget", None)
+            if intent.budget_constraint is not None:
+                sess.active_constraints["budget"] = intent.budget_constraint.to_dict()
+            elif "budget" in sess.active_constraints and not reset_budget:
+                intent = replace(intent, budget_constraint=BudgetConstraint(**sess.active_constraints["budget"]))
+
         explicit_current_page = any(
             phrase in lower_transcript
             for phrase in ("this product", "this item", "this one", "current product", "one on this page")
@@ -438,18 +520,17 @@ class ShoppingController:
             IntentOperation.DESCRIBE_PRODUCT,
         }:
             sess.pending_clarification_intent = None
+            sess.pending_allowed_answers.clear()
 
         if (
             intent.operation
             in {
-                IntentOperation.SEARCH,
-                IntentOperation.BROWSE,
-                IntentOperation.DESCRIBE_PRODUCT,
                 IntentOperation.CHECK_AVAILABILITY,
                 IntentOperation.ADD_TO_CART,
                 IntentOperation.UPDATE_QUANTITY,
                 IntentOperation.REMOVE_FROM_CART,
                 IntentOperation.NAVIGATE,
+                IntentOperation.SHOW_VARIANT,
             }
             and intent.product_query
             and not evidence.products
@@ -468,8 +549,6 @@ class ShoppingController:
                 evidence_query=intent.product_query,
             )
 
-        sess.pending_intents.pop(pending_key, None)
-
         expected_tools = {
             IntentOperation.SEARCH: {"search_catalog"},
             IntentOperation.BROWSE: {"browse_store", "search_catalog"},
@@ -481,31 +560,110 @@ class ShoppingController:
             IntentOperation.REMOVE_FROM_CART: {"update_cart"},
             IntentOperation.NAVIGATE: {"get_product", "show_variant"},
             IntentOperation.REQUEST_CHECKOUT: {"proceed_to_checkout"},
+            IntentOperation.CANCEL_CART: {"cancel_cart"},
+            IntentOperation.MANAGE_ORDERS: {"manage_orders"},
+            IntentOperation.STORE_INFORMATION: {"search_shop_policies_and_faqs"},
+            IntentOperation.SHOW_VARIANT: {"show_variant"},
         }
-        qualified = self.tool_registry.qualified()
-        try:
-            selection = await self.llm_provider.select_tool(LlmToolSelectionRequest(
-                intent=intent,
-                qualified_tools=tuple(tool.to_dict() for tool in qualified),
-                resolved_context={
-                    "current_product_id": current_product_id,
-                    "evidence_product_ids": list(evidence.products),
-                    "active_result_product_ids": list(sess.active_search_product_ids),
-                },
-                turn_id=turn_id,
-                request_revision=request_revision,
-            ))
-            proposal = ToolProposal(selection.tool_name, selection.arguments, selection.rationale)
-            self.tool_registry.validate(proposal)
-            if selection.tool_name not in expected_tools[intent.operation]:
-                raise ValueError("selected tool does not match the validated shopping intent")
-        except (LlmProviderError, ValueError, KeyError) as exc:
+        qualified_names = available_tools
+        qualified = self.tool_registry.qualified(available=qualified_names)
+        if not expected_tools[intent.operation].intersection(tool.name for tool in qualified):
+            return ControllerTurnResult(
+                session_id=session_id, turn_id=turn_id,
+                request_revision=request_revision, page_epoch=page_epoch,
+                status="error", spoken_response="That store capability is unavailable right now.",
+                extracted_intent=intent, reason="No qualified tool is available for the validated intent",
+            )
+        selection = None
+        proposal = None
+        selection_error: Exception | None = None
+        for _attempt in range(2):
+            try:
+                selection = await self.llm_provider.select_tool(LlmToolSelectionRequest(
+                    intent=intent,
+                    qualified_tools=tuple(tool.to_dict() for tool in qualified),
+                    resolved_context={
+                        "current_product_id": current_product_id,
+                        "evidence_product_ids": list(evidence.products),
+                        "active_result_product_ids": list(sess.active_search_product_ids),
+                    },
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                ))
+                proposal = ToolProposal(selection.tool_name, selection.arguments, selection.rationale)
+                self.tool_registry.validate(proposal, available=qualified_names)
+                if selection.tool_name not in expected_tools[intent.operation]:
+                    raise ValueError("selected tool does not match the validated shopping intent")
+                break
+            except (LlmProviderError, ValueError, KeyError) as exc:
+                selection_error = exc
+                selection = None
+                proposal = None
+        if selection is None or proposal is None:
             return ControllerTurnResult(
                 session_id=session_id, turn_id=turn_id,
                 request_revision=request_revision, page_epoch=page_epoch,
                 status="error", spoken_response="I could not safely choose a shopping action. Please try again.",
-                extracted_intent=intent, reason=f"Tool selection rejected: {exc}",
+                extracted_intent=intent, reason=f"Tool selection rejected: {selection_error}",
             )
+
+        read_tools = {"search_catalog", "browse_store", "get_product", "search_shop_policies_and_faqs"}
+        if tool_observation is not None:
+            if (
+                not isinstance(tool_observation, dict)
+                or tool_observation.get("tool") != selection.tool_name
+                or not isinstance(tool_observation.get("ok"), bool)
+                or not isinstance(tool_observation.get("data", {}), dict)
+            ):
+                return ControllerTurnResult(
+                    session_id, turn_id, request_revision, page_epoch, "error",
+                    "I could not validate the store response for that request.", intent,
+                    reason="Tool observation did not match the selected qualified tool",
+                    selected_tool=selection.tool_name,
+                )
+            observation_record = {
+                "tool": selection.tool_name,
+                "ok": bool(tool_observation["ok"]),
+                "source": str(tool_observation.get("source", "unknown"))[:80],
+                "data": dict(tool_observation.get("data", {})),
+                "error": str(tool_observation.get("error", ""))[:300] or None,
+                "observed_at_ms": int(tool_observation.get("observed_at_ms", now)),
+            }
+            sess.tool_observations.append(observation_record)
+            sess.tool_observations = sess.tool_observations[-16:]
+            if not observation_record["ok"]:
+                sess.pending_intents.pop(pending_key, None)
+                return ControllerTurnResult(
+                    session_id, turn_id, request_revision, page_epoch, "error",
+                    "That store capability is unavailable right now.", intent,
+                    reason=observation_record["error"] or "Qualified browser tool failed",
+                    selected_tool=selection.tool_name,
+                )
+
+        reference = (intent.product_query or "").casefold()
+        has_product = any(product.product_id == intent.product_query or product_title_matches(reference, product.title)
+                          for product in evidence.products.values()) if reference else bool(evidence.products)
+        read_satisfied = {
+            "search_catalog": ((evidence.query is not None and (not reference or evidence.query.casefold() == reference))
+                               or (available_tools is None and bool(evidence.products))),
+            "browse_store": tool_observation is not None or (available_tools is None and evidence.query is not None and bool(evidence.products)),
+            "get_product": has_product,
+            "search_shop_policies_and_faqs": tool_observation is not None,
+        }
+        needs_browser_read = selection.tool_name in read_tools and not read_satisfied[selection.tool_name]
+        if needs_browser_read:
+            sess.pending_intents[pending_key] = intent
+            return ControllerTurnResult(
+                session_id, turn_id, request_revision, page_epoch,
+                ("evidence_required" if selection.tool_name in {"search_catalog", "get_product"} else "tool_required"),
+                "", intent,
+                reason="Qualified browser read is required before responding",
+                evidence_query=(intent.product_query if selection.tool_name in {"search_catalog", "get_product"} else None),
+                selected_tool=selection.tool_name,
+                tool_request={"name": selection.tool_name, "arguments": dict(proposal.arguments)},
+            )
+
+        sess.pending_intents.pop(pending_key, None)
 
         # Do not silently discard a second requested action when the provider
         # returns only the first operation. A bounded plan contract can be
@@ -525,23 +683,57 @@ class ShoppingController:
 
         # 5. Dispatch based on extracted intent operation
         if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE):
+            collections = (tool_observation or {}).get("data", {}).get("collections", [])
+            if selection.tool_name == "browse_store" and collections and not evidence.products:
+                names = [str(item.get("title", "")).strip() for item in collections if isinstance(item, dict) and item.get("title")]
+                return ControllerTurnResult(
+                    session_id, turn_id, request_revision, page_epoch, "completed",
+                    f"Store collections: {', '.join(names[:8])}.", intent,
+                    reason=f"Observed {len(names)} collection references",
+                    selected_tool=selection.tool_name,
+                )
             result = self._handle_search_and_browse(
                 session_id, turn_id, request_revision, page_epoch, intent, evidence
             )
             if result.status == "completed" and result.result_product_ids:
                 sess.active_search_query = (intent.product_query or sess.active_search_query or "").strip() or None
                 sess.active_search_product_ids = result.result_product_ids
-            return replace(result, selected_tool=selection.tool_name)
+                result_set_id = f"rs_{uuid.uuid4().hex}"
+                sess.active_result_set_id = result_set_id
+                sess.result_sets[result_set_id] = {
+                    "result_set_id": result_set_id,
+                    "query": sess.active_search_query,
+                    "product_ids": list(result.result_product_ids),
+                    "observed_at_ms": now,
+                    "shop_id": evidence.shop_id,
+                    "currency": evidence.currency,
+                    "entries": [
+                        {"position": index + 1, "product_id": product_id,
+                         "eligible_variant_ids": [variant.variant_id for variant in evidence.products[product_id].variants
+                                                  if variant.available_for_sale]}
+                        for index, product_id in enumerate(result.result_product_ids)
+                        if product_id in evidence.products
+                    ],
+                    "rank_reason": ("closest_to_price" if intent.budget_constraint and intent.budget_constraint.comparison == "approximate"
+                                    else "cheapest" if any(word in lower_transcript for word in ("cheapest", "lowest", "least expensive"))
+                                    else "store_order"),
+                    "coverage": (tool_observation or {}).get("data", {}).get("coverage", "bounded_snapshot"),
+                }
+                if len(sess.result_sets) > 8:
+                    oldest = next(iter(sess.result_sets))
+                    if oldest != result_set_id:
+                        del sess.result_sets[oldest]
+            return replace(result, selected_tool=selection.tool_name, result_set_id=sess.active_result_set_id)
 
         elif intent.operation == IntentOperation.DESCRIBE_PRODUCT:
-            return self._handle_describe_and_compare(
+            return replace(self._handle_describe_and_compare(
                 session_id, turn_id, request_revision, page_epoch, intent, evidence
-            )
+            ), selected_tool=selection.tool_name)
 
         elif intent.operation == IntentOperation.VIEW_CART:
-            return self._handle_view_cart(
+            return replace(self._handle_view_cart(
                 session_id, turn_id, request_revision, page_epoch, intent, current_cart
-            )
+            ), selected_tool=selection.tool_name)
 
         elif intent.operation in (
             IntentOperation.ADD_TO_CART,
@@ -567,14 +759,98 @@ class ShoppingController:
                     intent,
                     unresolved_fields=tuple(dict.fromkeys((*intent.unresolved_fields, *result.clarification_fields))),
                 )
+                allowed_answers: dict[str, dict[str, str]] = {}
+                for product in evidence.products.values():
+                    if (intent.product_query and intent.product_query != product.product_id
+                            and not product_title_matches(intent.product_query, product.title)):
+                        continue
+                    for variant in product.variants:
+                        for key, value in variant.selected_options.items():
+                            if not result.clarification_fields or key.casefold() in {field.casefold() for field in result.clarification_fields}:
+                                allowed_answers[str(value).strip().casefold()] = {str(key).casefold(): str(value).casefold()}
+                sess.pending_allowed_answers = allowed_answers
             elif result.status != "evidence_required":
                 sess.pending_clarification_intent = None
-            return result
+                sess.pending_allowed_answers.clear()
+            return replace(result, selected_tool=selection.tool_name)
 
         elif intent.operation == IntentOperation.REQUEST_CHECKOUT:
-            return self._handle_checkout(
+            return replace(self._handle_checkout(
                 session_id, turn_id, request_revision, page_epoch, intent, current_cart
+            ), selected_tool=selection.tool_name)
+
+        elif intent.operation == IntentOperation.CANCEL_CART:
+            if not current_cart.lines:
+                return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                    "completed", "Your cart is already empty.", intent, selected_tool=selection.tool_name)
+            command = AuthorizedCommand(
+                command_id=f"cmd_{uuid.uuid4().hex}", session_id=session_id, shop_id=current_cart.shop_id,
+                turn_id=turn_id, request_revision=request_revision, page_epoch=page_epoch,
+                expires_at_ms=now + 30_000, operation=CommandOperation.CLEAR_CART,
+                parameters={"explicit_whole_cart": True}, expected_cart_fingerprint=current_cart.fingerprint(),
             )
+            return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                "completed", "I’m clearing the entire cart and will verify it.", intent,
+                authorized_command=command, selected_tool=selection.tool_name)
+
+        elif intent.operation == IntentOperation.MANAGE_ORDERS:
+            command = AuthorizedCommand(
+                command_id=f"cmd_{uuid.uuid4().hex}", session_id=session_id, shop_id=current_cart.shop_id,
+                turn_id=turn_id, request_revision=request_revision, page_epoch=page_epoch,
+                expires_at_ms=now + 30_000, operation=CommandOperation.MANAGE_ORDERS,
+                parameters={"url": "/account"}, expected_cart_fingerprint=current_cart.fingerprint(),
+            )
+            return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                "completed", "Opening Shopify account and order history. Shopify may ask you to sign in.", intent,
+                authorized_command=command, selected_tool=selection.tool_name)
+
+        elif intent.operation == IntentOperation.STORE_INFORMATION:
+            entries = (tool_observation or {}).get("data", {}).get("entries", [])
+            usable = [entry for entry in entries if isinstance(entry, dict) and entry.get("text") and entry.get("url")]
+            if not usable:
+                return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                    "completed", "I could not find a current store policy that answers that question.", intent,
+                    reason="Store policy tool returned no attributable evidence", selected_tool=selection.tool_name)
+            entry = usable[0]
+            text = re.sub(r"\s+", " ", str(entry["text"])).strip()[:500]
+            sentences = re.split(r"(?<=[.!?])\s+", text)
+            text = " ".join(sentence for sentence in sentences if not any(pattern.search(sentence) for pattern in INJECTION_PATTERNS)).strip()
+            if not text:
+                return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                    "completed", "I could not find a safe, current store policy answer for that question.", intent,
+                    reason="Store policy content contained only untrusted instructions", selected_tool=selection.tool_name)
+            title = str(entry.get("title", "Store policy")).strip()[:120]
+            url = str(entry["url"]).strip()[:500]
+            return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                "completed", f"According to {title}: {text} Source: {url}", intent,
+                reason="Answer grounded in current store policy observation", selected_tool=selection.tool_name)
+
+        elif intent.operation == IntentOperation.SHOW_VARIANT:
+            matches = [p for p in evidence.products.values() if intent.product_query and product_title_matches(intent.product_query, p.title)]
+            if len(matches) != 1 or not matches[0].url:
+                return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                    "clarification_needed", "Which product variant would you like me to show?", intent,
+                    clarification_options=tuple(p.title for p in matches[:4]), selected_tool=selection.tool_name)
+            resolution = CatalogResolver.resolve(
+                evidence=evidence,
+                target=IntentTarget(title_query=intent.product_query, selected_options=intent.selected_variant_attributes),
+            )
+            if resolution.status != ResolutionStatus.RESOLVED or resolution.variant is None:
+                return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                    "clarification_needed", resolution.clarification_question or "Which options should I select?", intent,
+                    clarification_options=resolution.clarification_options, clarification_fields=resolution.missing_options,
+                    selected_tool=selection.tool_name)
+            separator = "&" if "?" in matches[0].url else "?"
+            command = AuthorizedCommand(
+                command_id=f"cmd_{uuid.uuid4().hex}", session_id=session_id, shop_id=current_cart.shop_id,
+                turn_id=turn_id, request_revision=request_revision, page_epoch=page_epoch,
+                expires_at_ms=now + 30_000, operation=CommandOperation.NAVIGATE_STOREFRONT,
+                parameters={"url": f"{matches[0].url}{separator}variant={resolution.variant.variant_id}"},
+                expected_cart_fingerprint=current_cart.fingerprint(),
+            )
+            return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
+                "completed", f"Opening {matches[0].title} with that variant selected.", intent,
+                authorized_command=command, selected_tool=selection.tool_name)
 
         elif intent.operation == IntentOperation.NAVIGATE:
             matches = [p for p in evidence.products.values() if intent.product_query and product_title_matches(intent.product_query, p.title)]
@@ -603,6 +879,7 @@ class ShoppingController:
                 status="completed",
                 spoken_response=f"Opening {matches[0].title}.",
                 extracted_intent=intent, authorized_command=command,
+                selected_tool=selection.tool_name,
             )
 
         else:

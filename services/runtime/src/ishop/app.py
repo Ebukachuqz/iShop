@@ -28,8 +28,10 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     llm_provider = GroqLlmProvider(api_key=active.groq_api_key)
     tts_provider = SaharaTtsProvider(api_key=active.sahara_api_key)
     controllers: dict[str, ShoppingController] = {}
+    session_locks: dict[str, asyncio.Lock] = {}
     session_store = SessionStore(active.state_db_path)
     command_journal = CommandJournal(active.state_db_path)
+    command_journal.restart_reconcile()
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
         ready, readiness_reason = llm_provider.check_readiness()
@@ -47,24 +49,29 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
                 "spoken_response": "I could not verify this store context.",
                 "reason": "Browser evidence tenant does not match the signed session grant",
             }
-        controller = controllers.setdefault(
-            grant.anonymous_session_id,
-            ShoppingController(llm_provider=llm_provider),
-        )
-        saved_state = session_store.load(grant.anonymous_session_id)
-        if saved_state is not None:
-            controller.restore_session_state(saved_state)
-        result = await controller.handle_turn(
-            session_id=grant.anonymous_session_id,
-            turn_id=payload["turn_id"],
-            request_revision=payload["request_revision"],
-            page_epoch=payload["page_epoch"],
-            transcript=payload["transcript"],
-            evidence=evidence,
-            current_cart=current_cart,
-            current_product_id=payload.get("current_product_id"),
-        )
-        session_store.save(grant.anonymous_session_id, controller.export_session_state(grant.anonymous_session_id))
+        session_id = grant.anonymous_session_id
+        async with session_locks.setdefault(session_id, asyncio.Lock()):
+            controller = controllers.setdefault(
+                session_id,
+                ShoppingController(llm_provider=llm_provider),
+            )
+            saved_state = session_store.load(session_id)
+            if saved_state is not None:
+                controller.restore_session_state(saved_state)
+            result = await controller.handle_turn(
+                session_id=session_id,
+                turn_id=payload["turn_id"],
+                request_revision=payload["request_revision"],
+                page_epoch=payload["page_epoch"],
+                transcript=payload["transcript"],
+                evidence=evidence,
+                current_cart=current_cart,
+                current_product_id=payload.get("current_product_id"),
+                page_context=payload.get("page_context"),
+                available_tools=set(payload.get("available_tools") or []),
+                tool_observation=payload.get("tool_observation"),
+            )
+            session_store.save(session_id, controller.export_session_state(session_id))
         response: dict[str, Any] = {
             "turn_id": result.turn_id,
             "request_revision": result.request_revision,
@@ -77,28 +84,9 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             "evidence_query": result.evidence_query,
             "result_product_ids": list(result.result_product_ids),
             "selected_tool": result.selected_tool,
+            "result_set_id": result.result_set_id,
+            "tool_request": result.tool_request,
         }
-        if result.spoken_response:
-            try:
-                tts_session = await asyncio.wait_for(tts_provider.synthesize(
-                    result.spoken_response,
-                    generation=payload["request_revision"],
-                ), timeout=8)
-                async def collect_tts_chunks() -> list[dict[str, Any]]:
-                    chunks: list[dict[str, Any]] = []
-                    async for chunk in tts_session.chunks():
-                        chunks.append({
-                            "audio_base64": base64.b64encode(chunk.audio).decode("ascii"),
-                            "generation": chunk.generation,
-                            "sample_rate": chunk.sample_rate,
-                            "channels": chunk.channels,
-                            "format": chunk.format,
-                        })
-                    return chunks
-                audio_chunks = await asyncio.wait_for(collect_tts_chunks(), timeout=8)
-                response["tts_audio_chunks"] = audio_chunks
-            except Exception:
-                response["tts_audio_chunks"] = []
         if result.authorized_command is not None:
             command = result.authorized_command
             response["authorized_command"] = {
@@ -116,6 +104,18 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             }
         return response
 
+    async def synthesize_shopping_text(text: str, revision: int) -> list[dict[str, Any]]:
+        try:
+            tts_session = await asyncio.wait_for(tts_provider.synthesize(text, generation=revision), timeout=8)
+            chunks: list[dict[str, Any]] = []
+            async for chunk in tts_session.chunks():
+                chunks.append({"audio_base64": base64.b64encode(chunk.audio).decode("ascii"),
+                    "generation": chunk.generation, "sample_rate": chunk.sample_rate,
+                    "channels": chunk.channels, "format": chunk.format})
+            return chunks
+        except Exception:
+            return []
+
     app = create_voice_app(
         signing_secret=active.signing_secret,
         allowed_origins=set(active.allowed_origins),
@@ -125,6 +125,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         control_secret=active.control_secret,
         shopping_turn_handler=handle_shopping_turn,
         command_journal=command_journal,
+        shopping_tts_handler=synthesize_shopping_text,
     )
 
     @app.get("/health")

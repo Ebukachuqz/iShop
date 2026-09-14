@@ -82,3 +82,11 @@ def test_cart_v1_fingerprint_matches_browser_contract():
         ),
     )
     assert cart.fingerprint() == "b0181186fd87e3564b9f7f22f80d4538c25bd4956ba602e7e8d3ad1129ed6b17"
+
+
+def test_browser_line_key_survives_runtime_cart_deserialization():
+    cart = CartSnapshot.from_dict({
+        "shop_id": "store.myshopify.com", "currency": "USD",
+        "lines": [{"line_key": "shopify-line-7", "variant_id": "101", "quantity": 1, "properties": {}}],
+    })
+    assert cart.lines[0].shopify_line_key == "shopify-line-7"

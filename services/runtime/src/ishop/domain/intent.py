@@ -27,6 +27,10 @@ class IntentOperation(str, Enum):
     REMOVE_FROM_CART = "remove_from_cart"
     NAVIGATE = "navigate"
     REQUEST_CHECKOUT = "request_checkout"
+    CANCEL_CART = "cancel_cart"
+    MANAGE_ORDERS = "manage_orders"
+    STORE_INFORMATION = "store_information"
+    SHOW_VARIANT = "show_variant"
 
 
 @dataclass(frozen=True)

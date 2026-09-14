@@ -17,6 +17,8 @@ export const ALLOWED_COMMAND_OPERATIONS = Object.freeze([
   'remove_line',
   'navigate_storefront',
   'handoff_to_checkout',
+  'clear_cart',
+  'manage_orders',
 ]);
 
 export const FORBIDDEN_OPERATIONS = Object.freeze([
@@ -28,8 +30,6 @@ export const FORBIDDEN_OPERATIONS = Object.freeze([
   'execute_script',
   'eval',
   'arbitrary_url',
-  'clear_cart',
-  'manage_orders',
 ]);
 
 /**

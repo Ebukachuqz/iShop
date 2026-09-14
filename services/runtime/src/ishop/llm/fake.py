@@ -33,6 +33,7 @@ from ishop.llm.base import (
     LlmUsage,
     LlmToolSelectionRequest,
     LlmToolSelectionResult,
+    tool_arguments_for_intent,
 )
 
 INJECTION_PATTERNS = [
@@ -144,6 +145,24 @@ class FakeLlmProvider(LlmProvider):
                 )
 
         # 2. Explicit checkout request (T-20, T-21)
+        if any(phrase in lower for phrase in ("empty my entire cart", "clear my entire cart", "empty the whole cart", "clear the whole cart")):
+            return ShoppingIntent(intent_id=intent_id, operation=IntentOperation.CANCEL_CART,
+                is_explicit_checkout_request=False, supporting_transcript_span=text)
+        if any(phrase in lower for phrase in ("order history", "my orders", "manage orders", "where is my order")):
+            return ShoppingIntent(intent_id=intent_id, operation=IntentOperation.MANAGE_ORDERS,
+                is_explicit_checkout_request=False, supporting_transcript_span=text)
+        if any(word in lower for word in ("return policy", "shipping policy", "store hours", "faq")):
+            return ShoppingIntent(intent_id=intent_id, operation=IntentOperation.STORE_INFORMATION,
+                product_query=text, is_explicit_checkout_request=False, supporting_transcript_span=text)
+        if any(phrase in lower for phrase in ("show variant", "preview the", "select the color")):
+            product = next((name for name in ("Multi-location Snowboard", "Multi-managed Snowboard", "Complete Snowboard") if name.lower() in lower), None)
+            product = product or next((name for name in ("snowboard", "shirt", "hoodie", "cap", "dress", "shoes") if name in lower), None)
+            option = next((name for name in ("ice", "dawn", "powder", "electric", "red", "blue", "green", "black", "white") if name in lower), None)
+            return ShoppingIntent(intent_id=intent_id, operation=IntentOperation.SHOW_VARIANT,
+                product_query=product, selected_variant_attributes=({"color": option} if option else {}),
+                is_explicit_checkout_request=False, supporting_transcript_span=text,
+                unresolved_fields=(() if product else ("product_query",)))
+
         if any(phrase in lower for phrase in ("checkout", "proceed to checkout", "ready to pay", "take me to checkout")):
             return ShoppingIntent(
                 intent_id=intent_id,
@@ -151,6 +170,16 @@ class FakeLlmProvider(LlmProvider):
                 is_explicit_checkout_request=True,
                 supporting_transcript_span=text,
                 unresolved_fields=(),
+            )
+
+        if any(phrase in lower for phrase in ("open the", "open product", "go to the", "take me to the product")):
+            product = next((name for name in ("Multi-location Snowboard", "Multi-managed Snowboard", "Complete Snowboard") if name.lower() in lower), None)
+            product = product or next((name for name in ("snowboard", "shirt", "hoodie", "cap", "dress", "shoes") if name in lower), None)
+            return ShoppingIntent(
+                intent_id=intent_id, operation=IntentOperation.NAVIGATE,
+                product_query=product, is_explicit_checkout_request=False,
+                supporting_transcript_span=text,
+                unresolved_fields=(() if product else ("product_query",)),
             )
 
         # 3. View cart
@@ -172,6 +201,13 @@ class FakeLlmProvider(LlmProvider):
                 supporting_transcript_span=text,
                 product_query="compare",
                 unresolved_fields=(),
+            )
+        if any(phrase in lower for phrase in ("describe", "details about", "tell me about")):
+            product = next((name for name in ("Multi-location Snowboard", "Multi-managed Snowboard", "Complete Snowboard") if name.lower() in lower), None)
+            return ShoppingIntent(
+                intent_id=intent_id, operation=IntentOperation.DESCRIBE_PRODUCT,
+                is_explicit_checkout_request=False, supporting_transcript_span=text,
+                product_query=product, unresolved_fields=(() if product else ("product_query",)),
             )
 
         # 5. Quantity and removal parsing (T-05)
@@ -224,7 +260,7 @@ class FakeLlmProvider(LlmProvider):
             budget = BudgetConstraint(max_amount=amount, currency=request.budget_currency)
         else:
             min_match = re.search(r"(?:over|above|more than|at least)\s+(\d+)\s*(?:naira|ngn|\$|usd|eur)?", lower)
-            approx_match = re.search(r"(?:around|about|approximately)\s+(\d+)\s*(?:naira|ngn|\$|usd|eur)?", lower)
+            approx_match = re.search(r"(?:around|about|approximately|closest\s+to)\s+\$?(\d+)\s*(?:naira|ngn|usd|eur)?", lower)
             if min_match:
                 budget = BudgetConstraint(max_amount=None, min_amount=min_match.group(1), currency=request.budget_currency, comparison="min")
             elif approx_match:
@@ -249,7 +285,7 @@ class FakeLlmProvider(LlmProvider):
         for nm in neg_matches:
             negated_colors.add(nm.lower())
 
-        colors = ["red", "blue", "green", "black", "white", "yellow", "pupa"]
+        colors = ["red", "blue", "green", "black", "white", "yellow", "pupa", "ice", "dawn", "powder", "electric"]
         sizes = ["small", "medium", "large", "xl", "xxl", "kekere", "kékeré"]
 
         for color in colors:
@@ -275,12 +311,18 @@ class FakeLlmProvider(LlmProvider):
         # 8. Product query / reference extraction
         products_vocab = [
             "t-shirt", "shirt", "agbada", "kaftan", "cap", "dress",
-            "hoodie", "jeans", "trousers", "shoes", "jacket"
+            "hoodie", "jeans", "trousers", "shoes", "jacket", "snowboard"
         ]
         detected_products = [p for p in products_vocab if re.search(rf"\b{p}s?\b", lower)]
         product_query: str | None = None
 
-        if detected_products:
+        if "multi-location snowboard" in lower:
+            product_query = "Multi-location Snowboard"
+        elif "multi-managed snowboard" in lower:
+            product_query = "Multi-managed Snowboard"
+        elif "complete snowboard" in lower:
+            product_query = "Complete Snowboard"
+        elif detected_products:
             product_query = detected_products[0]
         elif any(phrase in lower for phrase in ("that one", "that item", "the one", "it")):
             # Ambiguous reference (T-03, T-06)
@@ -338,12 +380,16 @@ class FakeLlmProvider(LlmProvider):
             IntentOperation.REMOVE_FROM_CART: "update_cart",
             IntentOperation.NAVIGATE: "get_product",
             IntentOperation.REQUEST_CHECKOUT: "proceed_to_checkout",
+            IntentOperation.CANCEL_CART: "cancel_cart",
+            IntentOperation.MANAGE_ORDERS: "manage_orders",
+            IntentOperation.STORE_INFORMATION: "search_shop_policies_and_faqs",
+            IntentOperation.SHOW_VARIANT: "show_variant",
         }
         name = mapping[request.intent.operation]
+        if request.intent.operation == IntentOperation.BROWSE and request.intent.product_query:
+            name = "search_catalog"
         allowed = {str(tool["name"]) for tool in request.qualified_tools}
         if name not in allowed:
             raise LlmProviderError(f"Qualified tool unavailable: {name}", self.profile.profile_id)
-        arguments = {"operation": request.intent.operation.value}
-        if request.intent.product_query:
-            arguments["query"] = request.intent.product_query
+        arguments = tool_arguments_for_intent(request.intent, name)
         return LlmToolSelectionResult(name, arguments, "Deterministic offline tool selection", json.dumps({"tool_name": name, "arguments": arguments}))

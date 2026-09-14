@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/tool_call_proposal.json",
+  "title": "ToolCallProposal",
+  "type": "object",
+  "properties": {
+    "tool_name": {"type": "string"},
+    "arguments": {"type": "object"},
+    "rationale": {"type": "string", "maxLength": 1000},
+    "turn_id": {"type": "string"},
+    "request_revision": {"type": "integer", "minimum": 1},
+    "registry_version": {"const": "1.0.0"}
+  },
+  "required": ["tool_name", "arguments", "turn_id", "request_revision", "registry_version"],
+  "additionalProperties": false
+}

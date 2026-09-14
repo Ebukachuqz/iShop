@@ -35,6 +35,16 @@ export class StorefrontBridge {
     return 'ajax_cart';
   }
 
+  async getAvailableTools() {
+    const available = new Set(['search_catalog', 'get_product', 'show_variant', 'get_cart', 'update_cart', 'cancel_cart', 'proceed_to_checkout', 'manage_orders']);
+    if (this.webMcp.isAvailable() && typeof this.webMcp.getDeclaredTools === 'function') {
+      for (const descriptor of await this.webMcp.getDeclaredTools()) {
+        if (descriptor && typeof descriptor.name === 'string') available.add(descriptor.name);
+      }
+    }
+    return [...available].sort();
+  }
+
   async readAuthoritativeCart() {
     let webMcpError = null;
     if (this.webMcp.isAvailable()) {
@@ -97,7 +107,16 @@ export class StorefrontBridge {
       return { ok: true, outcome: 'human_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };
     }
 
-    const transport = this.detectPreferredTransport();
+    if (command.operation === 'manage_orders') {
+      const destination = new URL(command.parameters?.url || '/account', this.origin);
+      if (destination.origin !== this.origin || !destination.pathname.startsWith('/account')) {
+        return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Order history destination is not a trusted Shopify account path'], before_cart: beforeCart, after_cart: beforeCart };
+      }
+      this.navigate(destination.toString());
+      return { ok: true, outcome: 'navigation_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };
+    }
+
+    const transport = command.operation === 'clear_cart' ? 'ajax_cart' : this.detectPreferredTransport();
 
     // 1. Dispatch mutation according to preferred transport
     let mutationResult = null;
@@ -197,6 +216,9 @@ export class StorefrontBridge {
         lineKey: params.target_line_key,
         quantity: 0,
       });
+    } else if (op === 'clear_cart') {
+      if (params.explicit_whole_cart !== true) return { ok: false, errors: ['Whole-cart clearing requires explicit scope'] };
+      return await this.ajax.clearCart();
     }
 
     return { ok: false, errors: [`Unsupported Ajax operation '${op}'`] };

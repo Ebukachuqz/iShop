@@ -88,15 +88,33 @@
       this.playback = voice ? new voice.AudioPlayback() : null;
       this.pendingTranscript = "";
       this.pendingCatalogProducts = [];
+      this.pendingCatalogQuery = null;
       this.pendingTurn = null;
       this.pendingReceipts = new Map();
       this.messageHistory = [];
       this.historyKey = `ishop:messages:${root.dataset.shopDomain || location.host}`;
+      this.revisionKey = `ishop:revision:${root.dataset.shopDomain || location.host}`;
+      this.lastRevision = 0;
       this.pageEpoch = 1;
+      this.pageContext = null;
       try {
-        const key = `ishop:page-epoch:${root.dataset.shopDomain || location.host}`;
+        const shopKey = root.dataset.shopDomain || location.host;
+        this.lastRevision = Math.max(0, Number(sessionStorage.getItem(this.revisionKey) || 0));
+        const key = `ishop:page-epoch:${shopKey}`;
         this.pageEpoch = Number(sessionStorage.getItem(key) || 0) + 1;
         sessionStorage.setItem(key, String(this.pageEpoch));
+        const pathKey = `ishop:last-path:${shopKey}`;
+        const currentPath = `${location.pathname}${location.search}`;
+        const previousPath = sessionStorage.getItem(pathKey);
+        sessionStorage.setItem(pathKey, currentPath);
+        this.pageContext = {
+          page_id: `page_${crypto.randomUUID().replaceAll("-", "")}`,
+          path: currentPath,
+          previous_path: previousPath,
+          product_id: root.dataset.currentProductId || null,
+          variant_id: new URLSearchParams(location.search).get("variant"),
+          observed_at_ms: Date.now(),
+        };
       } catch (_) {
         this.pageEpoch = 1;
       }
@@ -193,6 +211,7 @@
     }
     setClient(client, integrations) {
       this.client = client;
+      this.client.revision = Math.max(Number(this.client.revision || 0), this.lastRevision);
       this.bridge = integrations?.bridge || null;
       this.catalog = integrations?.catalog || null;
       this.currentProductId = integrations?.currentProductId || null;
@@ -225,6 +244,8 @@
       try {
         if (this.playback) this.playback.interrupt();
         await this.client.startTurn({});
+        this.lastRevision = this.client.revision;
+        try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
         this.capture = new this.voice.PcmCapture({ sampleRate: 16000, channels: 1, onChunk: (chunk) => this.client.sendAudio(chunk) });
         await this.capture.start();
         this.micButton.hidden = true;
@@ -279,9 +300,14 @@
           shopping_runtime_failed: "The shopping service failed while processing that request.",
           provider_start_failed: "The speech service could not start. Please try again.",
           provider_stream_failed: "The speech service did not finish transcribing. Please try again.",
+          incompatible_runtime: "Drake was updated. Please refresh this page to reconnect safely.",
         };
         this.setState("failed", { error: messages[event.error_code] || "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
+        if (event.status === "tool_required" && event.tool_request) {
+          this.retrieveToolObservation(event.tool_request, event.turn_id, event.request_revision);
+          return;
+        }
         if (event.status === "evidence_required" && event.evidence_query) {
           this.retrieveCatalogEvidence(event.evidence_query, event.turn_id, event.request_revision);
           return;
@@ -303,6 +329,9 @@
           this.setState("ready");
           this.pendingTurn = null;
         }
+      } else if (event.type === "shopping_tts") {
+        if (!this.client || Number(event.request_revision) !== Number(this.client.revision) || Number(event.page_epoch) !== Number(this.pageEpoch)) return;
+        this.playTts(event.tts_audio_chunks);
       } else if (event.type === "command_result_ack") {
         const receipt = this.pendingReceipts.get(event.command_id);
         // Late or duplicate acknowledgements must never regress a newer turn.
@@ -370,6 +399,7 @@
         this.setState("checking");
         const catalogResult = await this.catalog.search(query, 8);
         this.pendingCatalogProducts = catalogResult.products;
+        this.pendingCatalogQuery = query;
         await this.submitShoppingRequest(this.pendingTranscript, {
           query,
           products: catalogResult.products,
@@ -379,7 +409,24 @@
       }
     }
 
-    async submitShoppingRequest(text, catalogEvidence = null, existingTurn = null) {
+    async retrieveToolObservation(request, turnId, requestRevision) {
+      try {
+        if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
+        this.setState("checking");
+        const observation = await this.catalog.executeTool(request, { currentProductHandle: this.currentProductHandle });
+        const products = Array.isArray(observation?.data?.products) ? observation.data.products : [];
+        this.pendingCatalogProducts = products;
+        this.pendingCatalogQuery = request.arguments?.query || request.arguments?.product_reference || request.arguments?.collection_reference || request.name;
+        await this.submitShoppingRequest(this.pendingTranscript, {
+          query: request.arguments?.query || request.arguments?.product_reference || request.arguments?.collection_reference || request.name,
+          products,
+        }, this.pendingTurn, observation);
+      } catch (_) {
+        this.setState("failed", { error: "I couldn’t use that store capability right now. Please try again." });
+      }
+    }
+
+    async submitShoppingRequest(text, catalogEvidence = null, existingTurn = null, toolObservation = null) {
       if (!this.client || !this.bridge || !this.catalog) {
         this.setState("failed", { error: "Drake is not connected to this store yet. You can try again shortly." });
         return;
@@ -389,11 +436,17 @@
         this.setState("checking");
         await this.client.connect();
         const currentCart = await this.bridge.readAuthoritativeCart();
+        const bridgeTools = typeof this.bridge.getAvailableTools === "function" ? await this.bridge.getAvailableTools() : [];
+        const catalogTools = typeof this.catalog.getAvailableTools === "function" ? await this.catalog.getAvailableTools() : [];
+        const availableTools = [...new Set([...bridgeTools, ...catalogTools])].sort();
         if (!catalogEvidence && this.currentProductHandle && typeof this.catalog.getByHandle === "function") {
           const currentProduct = await this.catalog.getByHandle(this.currentProductHandle);
           if (currentProduct) {
             catalogEvidence = { query: currentProduct.product_id, products: [currentProduct] };
           }
+        }
+        if (!catalogEvidence && this.candidates.products.length) {
+          catalogEvidence = { query: this.pendingCatalogQuery, products: this.candidates.products };
         }
         const turn = existingTurn || {
           turnId: `turn_${crypto.randomUUID().replaceAll("-", "")}`,
@@ -402,6 +455,8 @@
         };
         if (!existingTurn) {
           this.client.revision = turn.requestRevision;
+          this.lastRevision = turn.requestRevision;
+          try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
           this.pendingTurn = turn;
         }
         this.client.sendShoppingTurn({
@@ -419,6 +474,9 @@
           },
           current_cart: currentCart,
           current_product_id: this.currentProductId,
+          page_context: this.pageContext,
+          available_tools: availableTools,
+          tool_observation: toolObservation,
         });
         this.setState("interpreting");
       } catch (error) {
