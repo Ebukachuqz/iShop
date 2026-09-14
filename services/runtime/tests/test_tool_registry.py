@@ -11,6 +11,28 @@ def test_registry_qualifies_and_validates_tools():
         registry.validate(ToolProposal("update_cart", {}), available=names)
 
 
+def test_model_proposal_is_hydrated_from_trusted_intent_arguments():
+    registry = ToolRegistry()
+    proposal = registry.hydrate_and_validate(
+        ToolProposal("update_cart", {}, "add the selected item"),
+        {"operation": "add", "product_reference": "The Complete Snowboard", "quantity": 1},
+        available={"update_cart"},
+    )
+    assert proposal.arguments == {
+        "operation": "add",
+        "product_reference": "The Complete Snowboard",
+        "quantity": 1,
+    }
+
+
+def test_hydration_rejects_unknown_model_arguments_before_overlay():
+    with pytest.raises(ValueError, match="unknown fields"):
+        ToolRegistry().hydrate_and_validate(
+            ToolProposal("update_cart", {"cart_id": "invented"}),
+            {"operation": "add", "product_reference": "prod_1"},
+        )
+
+
 @pytest.mark.parametrize("name,arguments", [
     ("search_catalog", {"query": "snowboard", "resource_types": ["product"], "limit": 8}),
     ("browse_store", {"mode": "list_collections", "limit": 8}),

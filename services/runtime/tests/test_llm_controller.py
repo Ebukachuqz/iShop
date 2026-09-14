@@ -32,6 +32,7 @@ from ishop.llm.base import (
     LlmIntentRequest,
     LlmProviderError,
     LlmRegistry,
+    LlmToolSelectionResult,
 )
 from ishop.llm.fake import FakeLlmProvider
 from ishop.llm.gemini import GeminiLlmProvider
@@ -675,6 +676,26 @@ def test_current_page_reference_is_resolved_when_model_leaves_it_unknown(store_e
     result = asyncio.run(ShoppingController(provider, CommandReconciler(CommandJournal())).handle_turn(
         "s-page", "t-page", 1, 1, "Add this product", store_evidence,
         empty_cart, client=simulator, current_product_id="prod_cap",
+    ))
+    assert result.status == "completed"
+    assert result.authorized_command is not None
+    assert result.authorized_command.parameters["variant_id"] == "var_cap"
+
+
+def test_incomplete_real_provider_tool_arguments_are_hydrated_from_validated_intent(store_evidence, empty_cart):
+    class IncompleteToolSelector(FakeLlmProvider):
+        async def select_tool(self, request):
+            selected = await super().select_tool(request)
+            return LlmToolSelectionResult(
+                selected.tool_name, {}, "selected tool but omitted arguments", "{}"
+            )
+
+    provider = IncompleteToolSelector()
+    simulator = ShopifySimulator(store_evidence.shop_id, store_evidence.currency)
+    result = asyncio.run(ShoppingController(provider, CommandReconciler(CommandJournal())).handle_turn(
+        "s-hydrate", "t-hydrate", 1, 1,
+        "Add one embroidered cap to my cart", store_evidence, empty_cart,
+        client=simulator, available_tools={"update_cart"},
     ))
     assert result.status == "completed"
     assert result.authorized_command is not None

@@ -64,6 +64,7 @@ from ishop.llm.base import (
     LlmProvider,
     LlmProviderError,
     LlmToolSelectionRequest,
+    tool_arguments_for_intent,
 )
 from ishop.tools.registry import ToolProposal, ToolRegistry
 
@@ -590,10 +591,13 @@ class ShoppingController:
                     turn_id=turn_id,
                     request_revision=request_revision,
                 ))
-                proposal = ToolProposal(selection.tool_name, selection.arguments, selection.rationale)
-                self.tool_registry.validate(proposal, available=qualified_names)
                 if selection.tool_name not in expected_tools[intent.operation]:
                     raise ValueError("selected tool does not match the validated shopping intent")
+                proposal = self.tool_registry.hydrate_and_validate(
+                    ToolProposal(selection.tool_name, selection.arguments, selection.rationale),
+                    tool_arguments_for_intent(intent, selection.tool_name),
+                    available=qualified_names,
+                )
                 break
             except (LlmProviderError, ValueError, KeyError) as exc:
                 selection_error = exc
@@ -998,7 +1002,15 @@ class ShoppingController:
         elif wants_cheapest:
             matching.sort(key=lambda p: display_price(p).amount)
         names = [f"{p.title} (from {display_price(p)})" for p in matching[:3]]
-        resp = f"Found {len(matching)} items: {', '.join(names)}."
+        if intent.budget_constraint and intent.budget_constraint.comparison == "approximate":
+            target = Money.from_string(intent.budget_constraint.max_amount or "0", intent.budget_constraint.currency)
+            others = f" Other nearby matches: {', '.join(names[1:])}." if len(names) > 1 else ""
+            resp = f"Closest to {target} among {len(matching)} matching items is {names[0]}.{others}"
+        elif wants_cheapest:
+            others = f" Other matches in price order: {', '.join(names[1:])}." if len(names) > 1 else ""
+            resp = f"Cheapest among {len(matching)} matching items is {names[0]}.{others}"
+        else:
+            resp = f"Found {len(matching)} items: {', '.join(names)}."
         return ControllerTurnResult(
             session_id=session_id,
             turn_id=turn_id,

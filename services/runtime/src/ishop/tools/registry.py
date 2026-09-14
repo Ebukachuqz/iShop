@@ -142,3 +142,33 @@ class ToolRegistry:
         if proposal.name == "show_variant" and not (proposal.arguments.get("variant_reference") or proposal.arguments.get("options")):
             raise ValueError("show_variant requires a variant reference or option selection")
         return descriptor
+
+    def hydrate_and_validate(
+        self,
+        proposal: ToolProposal,
+        trusted_arguments: dict[str, Any],
+        *,
+        available: set[str] | None = None,
+    ) -> ToolProposal:
+        """Hydrate a model proposal from validated intent without trusting invented bindings.
+
+        The model still chooses a qualified tool and may propose optional fields. The
+        application rejects unknown fields, then overlays arguments derived from the
+        validated intent. This keeps missing model fields from breaking a safe action
+        while ensuring the model cannot override operation, quantity, or references.
+        """
+        descriptor = self._descriptors.get(proposal.name)
+        if descriptor is None:
+            raise ValueError(f"Unknown shopping tool: {proposal.name}")
+        if available is not None and proposal.name not in available:
+            raise ValueError(f"Shopping tool is unavailable: {proposal.name}")
+        if not isinstance(proposal.arguments, dict):
+            raise ValueError("Tool arguments must be an object")
+        allowed_fields = set(descriptor.input_schema.get("properties", {}))
+        unknown = set(proposal.arguments) - allowed_fields
+        if unknown:
+            raise ValueError(f"arguments for {proposal.name} contains unknown fields: {', '.join(sorted(unknown))}")
+        hydrated = {**proposal.arguments, **trusted_arguments}
+        normalized = ToolProposal(proposal.name, hydrated, proposal.rationale)
+        self.validate(normalized, available=available)
+        return normalized
