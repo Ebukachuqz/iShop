@@ -104,10 +104,12 @@ try {
   check(cart.items.length, 1, 'one cart line after clarified add');
   check(String(cart.items[0].variant_id), '101', 'clarified exact variant');
   check(cart.items[0].quantity, 1, 'initial quantity');
+  check(await evaluate("document.querySelector('#cart-icon-bubble .cart-count-bubble span[aria-hidden=true]').textContent"), '1', 'theme cart badge refreshes without reload');
 
   await submit('Add two Ice Complete Snowboard to my cart', 'completed');
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(cart.items[0].quantity, 3, 'increment quantity');
+  check(await evaluate("document.querySelector('#cart-icon-bubble .cart-count-bubble span[aria-hidden=true]').textContent"), '3', 'theme cart badge reflects quantity increment');
   await submit('Set quantity to 2 for the Ice Complete Snowboard', 'completed');
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(cart.items[0].quantity, 2, 'absolute quantity');
@@ -116,6 +118,7 @@ try {
   await submit('Remove the Ice Complete Snowboard from my cart', 'completed');
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(cart.items.length, 0, 'line removal');
+  check(await evaluate("document.querySelector('#cart-icon-bubble .cart-count-bubble')"), null, 'empty cart removes theme badge');
 
   await submit('Add the Complete Snowboard to my cart', 'clarifying');
   await submit('Cancel that');

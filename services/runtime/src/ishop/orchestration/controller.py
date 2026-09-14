@@ -492,6 +492,21 @@ class ShoppingController:
             intent = replace(intent, product_query=sess.selected_product_id,
                              unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"))
 
+        refers_to_selected_result = bool(re.search(
+            r"\b(?:it|its|that one|the one|that product|that item)\b", lower_transcript
+        ))
+        if (
+            refers_to_selected_result
+            and not intent.product_query
+            and sess.selected_product_id
+            and sess.selected_product_id in evidence.products
+        ):
+            intent = replace(
+                intent,
+                product_query=sess.selected_product_id,
+                unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"),
+            )
+
         if intent.operation in {IntentOperation.SEARCH, IntentOperation.BROWSE}:
             reset_budget = any(phrase in lower_transcript for phrase in ("no budget", "remove the price limit", "any price", "reset price"))
             changes_subject = bool(starts_new_read and intent.product_query and sess.active_search_query
@@ -505,15 +520,42 @@ class ShoppingController:
 
         explicit_current_page = any(
             phrase in lower_transcript
-            for phrase in ("this product", "this item", "this one", "current product", "one on this page")
+            for phrase in (
+                "this product", "this item", "this one", "current product", "one on this page",
+                "on this page", "on its page", "page we are on", "page we're on",
+            )
         )
-        if explicit_current_page and not intent.product_query and current_product_id:
+        implicit_page_quantity = (
+            intent.operation in {IntentOperation.ADD_TO_CART, IntentOperation.UPDATE_QUANTITY}
+            and intent.quantity_change is not None
+            and not intent.product_query
+        )
+        if (explicit_current_page or implicit_page_quantity) and not intent.product_query and current_product_id:
             if current_product_id in evidence.products:
                 intent = replace(
                     intent,
                     product_query=current_product_id,
                     unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"),
                 )
+
+        if intent.product_query and intent.selected_variant_attributes:
+            product_matches = [
+                product for product in evidence.products.values()
+                if product.product_id == intent.product_query or product_title_matches(intent.product_query, product.title)
+            ]
+            if len(product_matches) == 1:
+                valid_option_names = {name.casefold() for name in product_matches[0].options}
+                valid_option_names.update(
+                    str(name).casefold()
+                    for variant in product_matches[0].variants
+                    for name in variant.selected_options
+                )
+                grounded_attributes = {
+                    name: value for name, value in intent.selected_variant_attributes.items()
+                    if name.casefold() in valid_option_names
+                }
+                if grounded_attributes != intent.selected_variant_attributes:
+                    intent = replace(intent, selected_variant_attributes=grounded_attributes)
 
         if starts_new_read and intent.operation in {
             IntentOperation.SEARCH,
@@ -702,6 +744,8 @@ class ShoppingController:
             if result.status == "completed" and result.result_product_ids:
                 sess.active_search_query = (intent.product_query or sess.active_search_query or "").strip() or None
                 sess.active_search_product_ids = result.result_product_ids
+                if asks_for_result_ranking and result.result_product_ids:
+                    sess.selected_product_id = result.result_product_ids[0]
                 result_set_id = f"rs_{uuid.uuid4().hex}"
                 sess.active_result_set_id = result_set_id
                 sess.result_sets[result_set_id] = {
@@ -830,7 +874,11 @@ class ShoppingController:
                 reason="Answer grounded in current store policy observation", selected_tool=selection.tool_name)
 
         elif intent.operation == IntentOperation.SHOW_VARIANT:
-            matches = [p for p in evidence.products.values() if intent.product_query and product_title_matches(intent.product_query, p.title)]
+            matches = [
+                p for p in evidence.products.values()
+                if intent.product_query
+                and (p.product_id == intent.product_query or product_title_matches(intent.product_query, p.title))
+            ]
             if len(matches) != 1 or not matches[0].url:
                 return ControllerTurnResult(session_id, turn_id, request_revision, page_epoch,
                     "clarification_needed", "Which product variant would you like me to show?", intent,
@@ -857,7 +905,11 @@ class ShoppingController:
                 authorized_command=command, selected_tool=selection.tool_name)
 
         elif intent.operation == IntentOperation.NAVIGATE:
-            matches = [p for p in evidence.products.values() if intent.product_query and product_title_matches(intent.product_query, p.title)]
+            matches = [
+                p for p in evidence.products.values()
+                if intent.product_query
+                and (p.product_id == intent.product_query or product_title_matches(intent.product_query, p.title))
+            ]
             if len(matches) != 1 or not matches[0].url:
                 return ControllerTurnResult(
                     session_id=session_id, turn_id=turn_id,

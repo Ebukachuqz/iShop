@@ -14,6 +14,41 @@ import { cartFingerprint, computeExpectedCart, isCartEquivalent, validateCommand
 
 export { AjaxCartAdapter, StandardActionsAdapter, WebMcpAdapter };
 
+export function syncCartIndicators(cart, documentRef = typeof document !== 'undefined' ? document : null) {
+  if (!documentRef || !cart || !Array.isArray(cart.lines)) return;
+  const itemCount = cart.lines.reduce((total, line) => total + Math.max(0, Number(line.quantity) || 0), 0);
+  const icon = documentRef.querySelector?.('#cart-icon-bubble');
+  let bubble = icon?.querySelector?.('.cart-count-bubble');
+  if (itemCount <= 0) {
+    bubble?.remove?.();
+  } else if (icon) {
+    if (!bubble && documentRef.createElement) {
+      bubble = documentRef.createElement('div');
+      bubble.className = 'cart-count-bubble';
+      const visible = documentRef.createElement('span');
+      visible.setAttribute('aria-hidden', 'true');
+      const accessible = documentRef.createElement('span');
+      accessible.className = 'visually-hidden';
+      bubble.append(visible, accessible);
+      icon.append(bubble);
+    }
+    const spans = bubble?.querySelectorAll?.('span') || [];
+    if (spans[0]) spans[0].textContent = String(itemCount);
+    if (spans[1]) spans[1].textContent = `${itemCount} ${itemCount === 1 ? 'item' : 'items'}`;
+  }
+  for (const node of documentRef.querySelectorAll?.('[data-cart-count], .cart-count') || []) {
+    node.textContent = String(itemCount);
+    node.hidden = itemCount <= 0;
+  }
+  const detail = { cart, item_count: itemCount, source: 'ishop-drake' };
+  const EventConstructor = documentRef.defaultView?.CustomEvent
+    || (typeof CustomEvent === 'function' ? CustomEvent : null);
+  if (EventConstructor) {
+    documentRef.dispatchEvent?.(new EventConstructor('cart:updated', { detail }));
+    documentRef.dispatchEvent?.(new EventConstructor('cart:refresh', { detail }));
+  }
+}
+
 export class StorefrontBridge {
   constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null, navigate = null, origin = null } = {}) {
     this.ajax = ajaxAdapter || new AjaxCartAdapter();
@@ -171,6 +206,8 @@ export class StorefrontBridge {
         after_cart: afterCart,
       };
     }
+
+    syncCartIndicators(afterCart);
 
     return {
       ok: true,

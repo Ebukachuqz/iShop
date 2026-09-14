@@ -25,7 +25,7 @@ from ishop.commerce.catalog import (
 )
 from ishop.commerce.reconciler import CommandReconciler, ExecutionOutcome
 from ishop.commerce.simulator import ShopifySimulator
-from ishop.domain.intent import BudgetConstraint, IntentOperation, ShoppingIntent
+from ishop.domain.intent import BudgetConstraint, IntentOperation, QuantityChange, ShoppingIntent
 from ishop.domain.journal import CommandJournal, CommandStatus
 from ishop.domain.models import CartLine, CartSnapshot, CommandOperation, Money
 from ishop.llm.base import (
@@ -680,6 +680,82 @@ def test_current_page_reference_is_resolved_when_model_leaves_it_unknown(store_e
     assert result.status == "completed"
     assert result.authorized_command is not None
     assert result.authorized_command.parameters["variant_id"] == "var_cap"
+
+
+def test_current_page_phrasing_and_quantity_resolve_without_reasking(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("this one that we are on its page", ShoppingIntent(
+        intent_id="int_page_phrase", operation=IntentOperation.ADD_TO_CART,
+        product_query=None, quantity_change=None,
+        is_explicit_checkout_request=False,
+        supporting_transcript_span="this one that we are on its page",
+        unresolved_fields=("product_query",),
+    ))
+    provider.register_custom_intent("i want to buy 2", ShoppingIntent(
+        intent_id="int_page_quantity", operation=IntentOperation.UPDATE_QUANTITY,
+        product_query=None, quantity_change=QuantityChange("set", 2),
+        is_explicit_checkout_request=False,
+        supporting_transcript_span="I want to buy 2",
+        unresolved_fields=("product_query",),
+    ))
+    controller = ShoppingController(provider)
+
+    add = asyncio.run(controller.handle_turn(
+        "s-page-phrases", "t1", 1, 1, "this one that we are on its page",
+        store_evidence, empty_cart, current_product_id="prod_cap",
+    ))
+    assert add.authorized_command is not None
+    assert add.authorized_command.parameters["variant_id"] == "var_cap"
+
+    existing_cart = replace(empty_cart, lines=(CartLine(
+        variant_id="var_cap", quantity=1, shopify_line_key="line-cap",
+    ),))
+    quantity = asyncio.run(controller.handle_turn(
+        "s-page-phrases", "t2", 2, 1, "I want to buy 2",
+        store_evidence, existing_cart, current_product_id="prod_cap",
+    ))
+    assert quantity.authorized_command is not None
+    assert quantity.authorized_command.parameters["quantity"] == 2
+
+
+def test_invalid_model_variant_key_cannot_override_catalog_options(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("add it to my cart", ShoppingIntent(
+        intent_id="int_bad_variant", operation=IntentOperation.ADD_TO_CART,
+        product_query="Embroidered Cap", quantity_change=QuantityChange("increment", 1),
+        selected_variant_attributes={"variant": "cap"},
+        is_explicit_checkout_request=False,
+        supporting_transcript_span="Add it to my cart",
+    ))
+    result = asyncio.run(ShoppingController(provider).handle_turn(
+        "s-bad-variant", "t1", 1, 1, "Add it to my cart", store_evidence, empty_cart,
+    ))
+    assert result.authorized_command is not None
+    assert result.authorized_command.parameters["variant_id"] == "var_cap"
+    assert result.extracted_intent.selected_variant_attributes == {}
+
+
+def test_selected_result_pronoun_navigates_to_product(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("take me to its page", ShoppingIntent(
+        intent_id="int_open_selected", operation=IntentOperation.NAVIGATE,
+        product_query=None, is_explicit_checkout_request=False,
+        supporting_transcript_span="Take me to its page",
+        unresolved_fields=("product_query",),
+    ))
+    products = {
+        product_id: replace(product, url=f"/products/{product_id}")
+        for product_id, product in store_evidence.products.items()
+    }
+    evidence = replace(store_evidence, products=products)
+    controller = ShoppingController(provider)
+    controller.get_session_state("s-ranked-nav").selected_product_id = "prod_cap"
+
+    opened = asyncio.run(controller.handle_turn(
+        "s-ranked-nav", "t2", 1, 1, "Take me to its page", evidence, empty_cart,
+    ))
+    assert opened.authorized_command is not None
+    assert opened.authorized_command.parameters["url"] == "/products/prod_cap"
 
 
 def test_incomplete_real_provider_tool_arguments_are_hydrated_from_validated_intent(store_evidence, empty_cart):

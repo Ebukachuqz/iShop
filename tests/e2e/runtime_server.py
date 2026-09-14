@@ -74,6 +74,7 @@ app = create_voice_app(signing_secret=SECRET, allowed_origins={ORIGIN}, session_
 def storefront_page(*, product: bool = False) -> HTMLResponse:
     product_data = (' data-current-product-id="1" data-current-product-handle="complete-snowboard"' if product else '')
     return HTMLResponse(f"""<!doctype html><html><body>
+<a id="cart-icon-bubble" href="/cart"><span class="visually-hidden">Cart</span></a>
 <div id="ishop-drake-root" data-shop-domain="{SHOP}" data-bootstrap-url="/bootstrap"
  data-bootstrap-script-url="/assets/drake-bootstrap.js" data-bridge-script-url="/assets/drake-bridge.js"
  data-catalog-script-url="/assets/drake-catalog.js" data-voice-ws-url="ws://127.0.0.1:8765/ws"{product_data}></div>
