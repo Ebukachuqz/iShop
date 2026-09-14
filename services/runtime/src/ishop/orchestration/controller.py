@@ -279,6 +279,7 @@ class ShoppingController:
         page_context: dict[str, Any] | None = None,
         available_tools: set[str] | None = None,
         tool_observation: dict[str, Any] | None = None,
+        context_phase: str = "action",
         now_ms: int | None = None,
     ) -> ControllerTurnResult:
         """Handle an accepted final transcript through LLM reasoning, resolution, and execution."""
@@ -359,7 +360,7 @@ class ShoppingController:
         cart_lines_desc = [
             f"{l.quantity}x {l.canonical_key}" for l in current_cart.lines
         ]
-        cart_summary_str = "; ".join(cart_lines_desc) if cart_lines_desc else "Empty"
+        cart_summary_str = None if context_phase == "decision" else ("; ".join(cart_lines_desc) if cart_lines_desc else "Empty")
 
         req = LlmIntentRequest(
             transcript=transcript,
@@ -374,7 +375,7 @@ class ShoppingController:
 
         # 4. Interpret once, then retain the validated intent while read-only
         # storefront evidence is fetched for this same turn.
-        intent = sess.pending_intents.get(pending_key) if evidence.query is not None else None
+        intent = sess.pending_intents.get(pending_key) if (evidence.query is not None or context_phase == "action") else None
         intent_result: LlmInterpretationResult | None = None
         if intent is None:
             attempts = 0
@@ -436,10 +437,23 @@ class ShoppingController:
                     request_revision=request_revision,
                     page_epoch=page_epoch,
                     status="clarification_needed",
-                    spoken_response=decision.clarification_prompt or decision.response_text,
+                    spoken_response=decision.clarification_question or decision.response_text or "Could you clarify what you would like?",
                     extracted_intent=intent,
                     clarification_options=decision.clarification_options,
                     reason="Model requested clarification before acting",
+                )
+
+            if decision.mode == DecisionMode.ACT and context_phase == "decision":
+                sess.pending_intents[pending_key] = intent
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="context_required",
+                    spoken_response="",
+                    extracted_intent=intent,
+                    reason="Shopping action requires browser context after conversation-first decision",
                 )
 
         normalized_transcript = transcript.strip().casefold()

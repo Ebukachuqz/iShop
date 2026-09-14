@@ -97,7 +97,7 @@ class LlmIntentRequest:
 class LlmInterpretationResult:
     """Validated interpretation output from an LLM provider."""
 
-    intent: ShoppingIntent
+    intent: ShoppingIntent | None
     raw_response_text: str
     usage: LlmUsage
     profile_id: str
@@ -107,6 +107,8 @@ class LlmInterpretationResult:
     def get_decision(self) -> TurnDecision:
         if self.decision is not None:
             return self.decision
+        if self.intent is None:
+            raise ValueError("Provider returned neither a turn decision nor a shopping intent")
         return TurnDecision(mode=DecisionMode.ACT, intent=self.intent)
 
 

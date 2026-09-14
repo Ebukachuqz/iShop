@@ -75,8 +75,18 @@ try {
   await evaluate("document.querySelector('.drake-launcher').click(); true");
 
   // CF-01: Greetings are conversational with zero side-effects
+  await evaluate(`(() => {
+    window.__drakeCartReads = 0;
+    const original = window.IShopDrake.bridge.readAuthoritativeCart.bind(window.IShopDrake.bridge);
+    window.IShopDrake.bridge.readAuthoritativeCart = async (...args) => {
+      window.__drakeCartReads += 1;
+      return original(...args);
+    };
+    return true;
+  })()`);
   await submit('How are you, Drake?');
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('Drake')"), true, 'conversational greeting response');
+  check(await evaluate("window.__drakeCartReads"), 0, 'greeting performs no cart read');
   let cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(cart.items.length, 0, 'zero cart mutations on greeting');
 

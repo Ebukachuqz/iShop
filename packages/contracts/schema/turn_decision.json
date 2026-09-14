@@ -36,10 +36,13 @@
       "items": { "type": "string" }
     },
     "intent": {
-      "type": ["object", "null"]
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "shopping_intent.json"}
+      ]
     },
     "target_reference": {
-      "type": ["object", "null"]
+      "$ref": "shopping_intent.json#/properties/target_reference"
     },
     "grounded_facts": {
       "type": "array",
@@ -47,5 +50,19 @@
     }
   },
   "required": ["mode"],
+  "allOf": [
+    {
+      "if": {"properties": {"mode": {"const": "respond"}}},
+      "then": {"required": ["response_text", "response_purpose"], "properties": {"response_text": {"type": "string", "minLength": 1}}}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "clarify"}}},
+      "then": {"required": ["clarification_question"], "properties": {"clarification_question": {"type": "string", "minLength": 1}}}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "act"}}},
+      "then": {"required": ["intent"], "properties": {"intent": {"$ref": "shopping_intent.json"}}}
+    }
+  ],
   "additionalProperties": false
 }

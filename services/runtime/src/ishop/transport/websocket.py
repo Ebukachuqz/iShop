@@ -417,7 +417,7 @@ def _make_sahara_session(**kwargs: Any) -> RealtimeSpeechSession:
 
 def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> None:
     required = {"type", "turn_id", "request_revision", "page_epoch", "transcript"}
-    allowed = required | {"evidence", "current_cart", "current_product_id", "page_context", "available_tools", "tool_observation"}
+    allowed = required | {"evidence", "current_cart", "current_product_id", "page_context", "available_tools", "tool_observation", "context_phase"}
     if not required <= set(payload) or not set(payload) <= allowed:
         raise ValueError("Invalid shopping turn fields")
     if payload["type"] != "shopping_turn":
@@ -430,6 +430,8 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
         raise ValueError("Invalid page epoch")
     if not isinstance(payload["transcript"], str) or not payload["transcript"].strip() or len(payload["transcript"]) > 4000:
         raise ValueError("Invalid transcript")
+    if payload.get("context_phase", "action") not in ("decision", "action"):
+        raise ValueError("Invalid context phase")
     if payload.get("current_product_id") is not None and not isinstance(payload["current_product_id"], str):
         raise ValueError("Invalid current product ID")
     for field_name in ("evidence", "current_cart"):

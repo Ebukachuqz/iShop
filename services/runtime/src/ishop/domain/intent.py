@@ -312,6 +312,15 @@ class TurnDecision:
                     raise ValueError(f"Invalid decision mode: {self.mode}")
             else:
                 raise ValueError(f"Decision mode must be a DecisionMode enum, got {type(self.mode)}")
+        if self.mode == DecisionMode.ACT and self.intent is None:
+            raise ValueError("Act decisions require a validated shopping intent")
+        if self.mode == DecisionMode.RESPOND and not (self.response_text and self.response_text.strip()):
+            raise ValueError("Respond decisions require response text")
+        if self.mode == DecisionMode.CLARIFY and not (
+            (self.clarification_question and self.clarification_question.strip())
+            or (self.response_text and self.response_text.strip())
+        ):
+            raise ValueError("Clarify decisions require a clarification question")
 
     def to_dict(self) -> dict[str, Any]:
         return {

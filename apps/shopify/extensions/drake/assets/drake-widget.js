@@ -304,6 +304,10 @@
         };
         this.setState("failed", { error: messages[event.error_code] || "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
+        if (event.status === "context_required") {
+          this.submitShoppingRequest(this.pendingTranscript, null, this.pendingTurn);
+          return;
+        }
         if (event.status === "tool_required" && event.tool_request) {
           this.retrieveToolObservation(event.tool_request, event.turn_id, event.request_revision);
           return;
@@ -504,24 +508,27 @@
         this.pendingTranscript = text;
         this.setState("checking");
         await this.client.connect();
+        const includeStoreContext = Boolean(existingTurn || catalogEvidence || toolObservation);
         let currentCart = null;
-        try {
-          currentCart = await this.bridge.readAuthoritativeCart();
-        } catch (_) {
-          currentCart = {
-            shop_id: this.root.dataset.shopDomain || location.host,
-            currency: window.Shopify?.currency?.active || "USD",
-            lines: [],
-          };
+        if (includeStoreContext) {
+          try {
+            currentCart = await this.bridge.readAuthoritativeCart();
+          } catch (_) {
+            currentCart = {
+              shop_id: this.root.dataset.shopDomain || location.host,
+              currency: window.Shopify?.currency?.active || "USD",
+              lines: [],
+            };
+          }
         }
         let bridgeTools = [];
-        try {
+        try { if (includeStoreContext) {
           bridgeTools = typeof this.bridge.getAvailableTools === "function" ? await this.bridge.getAvailableTools() : [];
-        } catch (_) {}
+        } } catch (_) {}
         let catalogTools = [];
-        try {
+        try { if (includeStoreContext) {
           catalogTools = typeof this.catalog.getAvailableTools === "function" ? await this.catalog.getAvailableTools() : [];
-        } catch (_) {}
+        } } catch (_) {}
         const availableTools = [...new Set([...bridgeTools, ...catalogTools])].sort();
         
         const combinedProducts = [];
@@ -535,7 +542,7 @@
         if (catalogEvidence?.products) {
           catalogEvidence.products.forEach(addProduct);
         }
-        if (this.currentProductHandle && typeof this.catalog.getByHandle === "function") {
+        if (includeStoreContext && this.currentProductHandle && typeof this.catalog.getByHandle === "function") {
           try {
             const currentProduct = await this.catalog.getByHandle(this.currentProductHandle);
             if (currentProduct) addProduct(currentProduct);
@@ -556,25 +563,29 @@
           try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
           this.pendingTurn = turn;
         }
-        this.client.sendShoppingTurn({
+        const payload = {
           turn_id: turn.turnId,
           request_revision: turn.requestRevision,
           page_epoch: turn.pageEpoch,
           transcript: text,
-          evidence: {
+          current_product_id: this.currentProductId,
+          page_context: this.pageContext,
+          context_phase: includeStoreContext ? "action" : "decision",
+        };
+        if (includeStoreContext) {
+          payload.evidence = {
             snapshot_id: `browser_${Date.now()}`,
             shop_id: currentCart.shop_id,
             currency: currentCart.currency,
             observed_at_ms: Date.now(),
             query: catalogEvidence?.query || this.pendingCatalogQuery || null,
             products: combinedProducts,
-          },
-          current_cart: currentCart,
-          current_product_id: this.currentProductId,
-          page_context: this.pageContext,
-          available_tools: availableTools,
-          tool_observation: toolObservation,
-        });
+          };
+          payload.current_cart = currentCart;
+          payload.available_tools = availableTools;
+          if (toolObservation) payload.tool_observation = toolObservation;
+        }
+        this.client.sendShoppingTurn(payload);
         this.setState("interpreting");
       } catch (error) {
         console.error('[Drake] Store context request failed:', error);

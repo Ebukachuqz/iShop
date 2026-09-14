@@ -151,3 +151,11 @@ test('widget renders untrusted shopper and store text without HTML insertion', (
   assert.match(widgetSource, /shopping_runtime_failed/);
   assert.match(widgetSource, /shopping service failed while processing/);
 });
+
+test('widget uses decision-first ingress before collecting store context', () => {
+  assert.match(widgetSource, /context_phase:\s*includeStoreContext \? "action" : "decision"/);
+  assert.match(widgetSource, /event\.status === "context_required"/);
+  const contextGate = widgetSource.indexOf('if (includeStoreContext) {');
+  const cartRead = widgetSource.indexOf('await this.bridge.readAuthoritativeCart()', contextGate);
+  assert.ok(contextGate >= 0 && cartRead > contextGate);
+});

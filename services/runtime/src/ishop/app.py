@@ -85,6 +85,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
                 page_context=payload.get("page_context"),
                 available_tools=set(payload.get("available_tools") or []),
                 tool_observation=payload.get("tool_observation"),
+                context_phase=payload.get("context_phase", "action"),
             )
             session_store.save(session_id, controller.export_session_state(session_id))
         response: dict[str, Any] = {

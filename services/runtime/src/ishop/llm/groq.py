@@ -30,6 +30,7 @@ from ishop.llm.base import (
 )
 from ishop.llm.prompts import (
     GROUNDED_RESPONSE_SYSTEM_PROMPT,
+    SYSTEM_DECISION_PROMPT,
     SYSTEM_INTENT_PROMPT,
     format_intent_user_prompt,
 )
@@ -112,7 +113,7 @@ class GroqLlmProvider(LlmProvider):
         payload = {
             "model": self._model_name,
             "messages": [
-                {"role": "system", "content": SYSTEM_INTENT_PROMPT},
+                {"role": "system", "content": f"{SYSTEM_DECISION_PROMPT}\n\n{SYSTEM_INTENT_PROMPT}"},
                 {"role": "user", "content": user_prompt},
             ],
             "response_format": {"type": "json_object"},
@@ -159,10 +160,12 @@ class GroqLlmProvider(LlmProvider):
             elif "mode" in intent_data:
                 decision = TurnDecision.from_dict(intent_data)
 
-            if "intent" in intent_data and isinstance(intent_data["intent"], dict):
-                intent = ShoppingIntent.from_dict(intent_data["intent"])
+            if decision is None:
+                raise ValueError("Response did not contain a TurnDecision envelope")
+            if "intent" in intent_data:
+                intent = ShoppingIntent.from_dict(intent_data["intent"]) if isinstance(intent_data["intent"], dict) else None
             else:
-                intent = ShoppingIntent.from_dict(intent_data)
+                intent = decision.intent
         except Exception as e:
             raise LlmProviderError(
                 message=f"Failed to parse or validate structured intent from Groq: {e}",
