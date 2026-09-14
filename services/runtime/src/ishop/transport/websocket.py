@@ -416,8 +416,8 @@ def _make_sahara_session(**kwargs: Any) -> RealtimeSpeechSession:
 
 
 def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> None:
-    required = {"type", "turn_id", "request_revision", "page_epoch", "transcript", "evidence", "current_cart"}
-    allowed = required | {"current_product_id", "page_context", "available_tools", "tool_observation"}
+    required = {"type", "turn_id", "request_revision", "page_epoch", "transcript"}
+    allowed = required | {"evidence", "current_cart", "current_product_id", "page_context", "available_tools", "tool_observation"}
     if not required <= set(payload) or not set(payload) <= allowed:
         raise ValueError("Invalid shopping turn fields")
     if payload["type"] != "shopping_turn":
@@ -433,10 +433,12 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
     if payload.get("current_product_id") is not None and not isinstance(payload["current_product_id"], str):
         raise ValueError("Invalid current product ID")
     for field_name in ("evidence", "current_cart"):
-        if not isinstance(payload[field_name], dict):
-            raise ValueError(f"Invalid {field_name}")
-        if payload[field_name].get("shop_id") != grant.shop_id:
-            raise ValueError(f"{field_name} shop mismatch")
+        field_val = payload.get(field_name)
+        if field_val is not None:
+            if not isinstance(field_val, dict):
+                raise ValueError(f"Invalid {field_name}")
+            if field_val.get("shop_id") != grant.shop_id:
+                raise ValueError(f"{field_name} shop mismatch")
     page_context = payload.get("page_context")
     if page_context is not None:
         if not isinstance(page_context, dict) or set(page_context) - {"page_id", "path", "previous_path", "product_id", "variant_id", "observed_at_ms"}:

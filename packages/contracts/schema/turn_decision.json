@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ishop.internal/schemas/v1/turn_decision.json",
+  "title": "TurnDecision",
+  "description": "Conversation-first top-level decision (respond, clarify, or act).",
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["respond", "clarify", "act"]
+    },
+    "response_text": {
+      "type": ["string", "null"]
+    },
+    "response_purpose": {
+      "type": ["string", "null"],
+      "enum": [
+        "greeting",
+        "capability_help",
+        "general_assistance",
+        "refusal",
+        "store_info",
+        "informational",
+        null
+      ]
+    },
+    "clarification_question": {
+      "type": ["string", "null"]
+    },
+    "clarification_options": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "clarification_fields": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "intent": {
+      "type": ["object", "null"]
+    },
+    "target_reference": {
+      "type": ["object", "null"]
+    },
+    "grounded_facts": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  },
+  "required": ["mode"],
+  "additionalProperties": false
+}

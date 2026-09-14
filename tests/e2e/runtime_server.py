@@ -11,6 +11,7 @@ from fastapi import Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from ishop.app import _evidence_from_browser
+from ishop.commerce.catalog import EvidenceSnapshot
 from ishop.domain.journal import CommandJournal
 from ishop.domain.models import CartSnapshot, SessionGrant
 from ishop.domain.session_store import SessionStore
@@ -33,15 +34,32 @@ cart_items: list[dict[str, Any]] = []
 
 async def shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> dict[str, Any]:
     session_id = grant.anonymous_session_id
+    evidence_raw = payload.get("evidence")
+    evidence = (
+        _evidence_from_browser(evidence_raw)
+        if evidence_raw is not None
+        else EvidenceSnapshot(snapshot_id="", shop_id=grant.shop_id, currency="USD", observed_at_ms=0, products={})
+    )
+    cart_raw = payload.get("current_cart")
+    current_cart = (
+        CartSnapshot.from_dict(cart_raw)
+        if cart_raw is not None
+        else CartSnapshot(shop_id=grant.shop_id, currency="USD", lines=())
+    )
     async with session_locks.setdefault(session_id, asyncio.Lock()):
         controller = controllers.setdefault(session_id, ShoppingController(FakeLlmProvider()))
         saved_state = session_store.load(session_id)
         if saved_state is not None:
             controller.restore_session_state(saved_state)
         result = await controller.handle_turn(
-            session_id, payload["turn_id"], payload["request_revision"], payload["page_epoch"],
-            payload["transcript"], _evidence_from_browser(payload["evidence"]),
-            CartSnapshot.from_dict(payload["current_cart"]), current_product_id=payload.get("current_product_id"),
+            session_id,
+            payload["turn_id"],
+            payload["request_revision"],
+            payload["page_epoch"],
+            payload["transcript"],
+            evidence,
+            current_cart,
+            current_product_id=payload.get("current_product_id"),
             page_context=payload.get("page_context"),
             available_tools=set(payload.get("available_tools") or []),
             tool_observation=payload.get("tool_observation"),
@@ -92,6 +110,16 @@ async def product_page() -> HTMLResponse:
     return storefront_page(product=True)
 
 
+@app.get("/products/multi-location-snowboard")
+async def multi_location_page() -> HTMLResponse:
+    return storefront_page(product=True)
+
+
+@app.get("/products/multi-managed-snowboard")
+async def multi_managed_page() -> HTMLResponse:
+    return storefront_page(product=True)
+
+
 @app.get("/account")
 async def account_page() -> HTMLResponse:
     return HTMLResponse("<h1>Synthetic Shopify account handoff</h1>")
@@ -100,6 +128,11 @@ async def account_page() -> HTMLResponse:
 @app.get("/checkout")
 async def checkout_page() -> HTMLResponse:
     return HTMLResponse("<h1>Synthetic Shopify checkout handoff — no payment capability</h1>")
+
+
+@app.get("/cart")
+async def cart_page() -> HTMLResponse:
+    return storefront_page()
 
 
 @app.get("/assets/{name}")

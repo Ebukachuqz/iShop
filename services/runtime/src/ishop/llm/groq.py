@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-from ishop.domain.intent import ShoppingIntent
+from ishop.domain.intent import ShoppingIntent, TurnDecision
 from ishop.llm.base import (
     GroundedResponseContext,
     LlmIntentRequest,
@@ -153,7 +153,16 @@ class GroqLlmProvider(LlmProvider):
         try:
             raw_text = res_json["choices"][0]["message"]["content"]
             intent_data = json.loads(raw_text)
-            intent = ShoppingIntent.from_dict(intent_data)
+            decision = None
+            if "decision" in intent_data and isinstance(intent_data["decision"], dict):
+                decision = TurnDecision.from_dict(intent_data["decision"])
+            elif "mode" in intent_data:
+                decision = TurnDecision.from_dict(intent_data)
+
+            if "intent" in intent_data and isinstance(intent_data["intent"], dict):
+                intent = ShoppingIntent.from_dict(intent_data["intent"])
+            else:
+                intent = ShoppingIntent.from_dict(intent_data)
         except Exception as e:
             raise LlmProviderError(
                 message=f"Failed to parse or validate structured intent from Groq: {e}",
@@ -173,6 +182,7 @@ class GroqLlmProvider(LlmProvider):
 
         return LlmInterpretationResult(
             intent=intent,
+            decision=decision,
             raw_response_text=raw_text,
             usage=usage,
             profile_id=self.profile.profile_id,

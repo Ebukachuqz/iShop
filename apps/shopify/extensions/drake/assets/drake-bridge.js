@@ -112,22 +112,29 @@ export class StorefrontBridge {
     if (Number.isFinite(command.expires_at_ms) && Date.now() > command.expires_at_ms) {
       return { ok: false, outcome: 'rejected', transport_used: 'ajax_cart', errors: ['Command expired before dispatch (S-09)'] };
     }
+    if (command.operation === 'navigate_storefront') {
+      let beforeCart = null;
+      try {
+        beforeCart = await this.readAuthoritativeCart();
+      } catch (_) {
+        beforeCart = { shop_id: command.shop_id || '', currency: 'USD', lines: [] };
+      }
+      const destination = new URL(command.parameters?.url || '/', this.origin);
+      const pathname = destination.pathname;
+      const trustedPath = pathname === '/' || pathname === '/cart' || pathname.startsWith('/cart') || pathname.startsWith('/products/') || pathname.startsWith('/collections/') || pathname.startsWith('/search') || pathname.startsWith('/pages/');
+      if (destination.origin !== this.origin || !trustedPath) {
+        return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Navigation destination is not a trusted Shopify product or collection path'], before_cart: beforeCart, after_cart: beforeCart };
+      }
+      this.navigate(destination.toString());
+      return { ok: true, outcome: 'navigation_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };
+    }
+
     const beforeCart = await this.readAuthoritativeCart();
     if (command.expected_cart_fingerprint) {
       const actualFingerprint = await this._fingerprintCart(beforeCart);
       if (actualFingerprint !== command.expected_cart_fingerprint) {
         return { ok: false, outcome: 'rejected', transport_used: 'ajax_cart', errors: ['Cart changed before dispatch; refresh required (S-09)'], before_cart: beforeCart, after_cart: beforeCart };
       }
-    }
-
-    if (command.operation === 'navigate_storefront') {
-      const destination = new URL(command.parameters?.url || '/', this.origin);
-      const trustedPath = destination.pathname.startsWith('/products/') || destination.pathname.startsWith('/collections/');
-      if (destination.origin !== this.origin || !trustedPath) {
-        return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Navigation destination is not a trusted Shopify product or collection path'], before_cart: beforeCart, after_cart: beforeCart };
-      }
-      this.navigate(destination.toString());
-      return { ok: true, outcome: 'navigation_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };
     }
 
     if (command.operation === 'handoff_to_checkout') {

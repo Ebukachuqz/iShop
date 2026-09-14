@@ -147,6 +147,7 @@ def validate_shopping_intent_payload(data: Any) -> list[str]:
         "is_explicit_checkout_request",
         "supporting_transcript_span",
         "original_language_wording",
+        "target_reference",
         "unresolved_fields",
     }
     unexpected_keys = set(data.keys()) - allowed_properties
@@ -256,7 +257,91 @@ def validate_shopping_intent_payload(data: Any) -> list[str]:
             elif not isinstance(bc["currency"], str) or not re.match(r"^[A-Z]{3}$", bc["currency"]):
                 errors.append(f"budget_constraint currency must be 3 uppercase letters, got '{bc.get('currency')}'")
 
+    if "target_reference" in data and data["target_reference"] is not None:
+        tr = data["target_reference"]
+        if not isinstance(tr, dict):
+            errors.append(f"target_reference must be an object, got {type(tr).__name__}")
+        else:
+            if "kind" not in tr or not isinstance(tr["kind"], str):
+                errors.append("target_reference missing valid 'kind'")
+            if "value" not in tr or not isinstance(tr["value"], str):
+                errors.append("target_reference missing valid 'value'")
+
     return errors
+
+
+class DecisionMode(str, Enum):
+    """Modes of conversation-first turn decision."""
+
+    RESPOND = "respond"
+    CLARIFY = "clarify"
+    ACT = "act"
+
+
+class ResponsePurpose(str, Enum):
+    """Purposes for conversational respond turns."""
+
+    GREETING = "greeting"
+    CAPABILITY_HELP = "capability_help"
+    GENERAL_ASSISTANCE = "general_assistance"
+    REFUSAL = "refusal"
+    STORE_INFO = "store_info"
+    INFORMATIONAL = "informational"
+
+
+@dataclass(frozen=True)
+class TurnDecision:
+    """Conversation-first top-level decision."""
+
+    mode: DecisionMode
+    response_text: str | None = None
+    response_purpose: ResponsePurpose | None = None
+    clarification_question: str | None = None
+    clarification_options: tuple[str, ...] = ()
+    clarification_fields: tuple[str, ...] = ()
+    intent: ShoppingIntent | None = None
+    target_reference: TargetReference | None = None
+    grounded_facts: tuple[dict[str, Any], ...] = ()
+
+    def __post_init__(self):
+        if not isinstance(self.mode, DecisionMode):
+            if isinstance(self.mode, str):
+                try:
+                    object.__setattr__(self, "mode", DecisionMode(self.mode))
+                except ValueError:
+                    raise ValueError(f"Invalid decision mode: {self.mode}")
+            else:
+                raise ValueError(f"Decision mode must be a DecisionMode enum, got {type(self.mode)}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode.value,
+            "response_text": self.response_text,
+            "response_purpose": self.response_purpose.value if self.response_purpose else None,
+            "clarification_question": self.clarification_question,
+            "clarification_options": list(self.clarification_options),
+            "clarification_fields": list(self.clarification_fields),
+            "intent": self.intent.to_dict() if self.intent else None,
+            "target_reference": self.target_reference.to_dict() if self.target_reference else None,
+            "grounded_facts": list(self.grounded_facts),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TurnDecision:
+        intent_raw = data.get("intent")
+        target_raw = data.get("target_reference")
+        purpose_raw = data.get("response_purpose")
+        return cls(
+            mode=DecisionMode(data["mode"]),
+            response_text=data.get("response_text"),
+            response_purpose=ResponsePurpose(purpose_raw) if purpose_raw else None,
+            clarification_question=data.get("clarification_question"),
+            clarification_options=tuple(str(x) for x in data.get("clarification_options", [])),
+            clarification_fields=tuple(str(x) for x in data.get("clarification_fields", [])),
+            intent=ShoppingIntent.from_dict(intent_raw) if intent_raw else None,
+            target_reference=TargetReference.from_dict(target_raw) if target_raw else None,
+            grounded_facts=tuple(dict(x) for x in data.get("grounded_facts", []) if isinstance(x, dict)),
+        )
 
 
 @dataclass(frozen=True)
@@ -274,6 +359,7 @@ class ShoppingIntent:
     target_line_key: str | None = None
     budget_constraint: BudgetConstraint | None = None
     original_language_wording: str | None = None
+    target_reference: TargetReference | None = None
     schema_version: str = INTENT_SCHEMA_VERSION
 
     def __post_init__(self):
@@ -298,6 +384,7 @@ class ShoppingIntent:
             "is_explicit_checkout_request": self.is_explicit_checkout_request,
             "supporting_transcript_span": self.supporting_transcript_span,
             "original_language_wording": self.original_language_wording,
+            "target_reference": self.target_reference.to_dict() if self.target_reference else None,
             "unresolved_fields": list(self.unresolved_fields),
         }
         return data
@@ -329,6 +416,11 @@ class ShoppingIntent:
         )
 
         op = IntentOperation(data["operation"])
+        target_ref = (
+            TargetReference.from_dict(data["target_reference"])
+            if data.get("target_reference")
+            else None
+        )
 
         return cls(
             schema_version=data["schema_version"],
@@ -342,5 +434,6 @@ class ShoppingIntent:
             is_explicit_checkout_request=data["is_explicit_checkout_request"],
             supporting_transcript_span=str(data["supporting_transcript_span"]),
             original_language_wording=data.get("original_language_wording"),
+            target_reference=target_ref,
             unresolved_fields=tuple(data["unresolved_fields"]),
         )

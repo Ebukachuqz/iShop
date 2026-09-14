@@ -122,6 +122,43 @@
         "null"
       ]
     },
+    "target_reference": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "search_query",
+            "observed_product",
+            "result_position",
+            "current_page",
+            "cart_line",
+            "collection",
+            "comparison_selection"
+          ]
+        },
+        "value": {
+          "type": "string"
+        },
+        "result_set_id": {
+          "type": ["string", "null"]
+        },
+        "position": {
+          "type": ["integer", "null"]
+        },
+        "handle": {
+          "type": ["string", "null"]
+        },
+        "url": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["kind", "value"],
+      "additionalProperties": false
+    },
     "unresolved_fields": {
       "type": "array",
       "items": {

@@ -41,14 +41,29 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
                 "spoken_response": "The shopping reasoning service is not configured yet.",
                 "reason": readiness_reason or "Selected LLM profile is unavailable",
             }
-        evidence = _evidence_from_browser(payload["evidence"])
-        current_cart = CartSnapshot.from_dict(payload["current_cart"])
-        if evidence.shop_id != grant.shop_id or current_cart.shop_id != grant.shop_id:
-            return {
-                "status": "rejected",
-                "spoken_response": "I could not verify this store context.",
-                "reason": "Browser evidence tenant does not match the signed session grant",
-            }
+        evidence_raw = payload.get("evidence")
+        if evidence_raw is not None:
+            evidence = _evidence_from_browser(evidence_raw)
+            if evidence.shop_id != grant.shop_id:
+                return {
+                    "status": "rejected",
+                    "spoken_response": "I could not verify this store context.",
+                    "reason": "Browser evidence tenant does not match the signed session grant",
+                }
+        else:
+            evidence = EvidenceSnapshot(snapshot_id="", shop_id=grant.shop_id, currency="USD", observed_at_ms=0, products={})
+
+        cart_raw = payload.get("current_cart")
+        if cart_raw is not None:
+            current_cart = CartSnapshot.from_dict(cart_raw)
+            if current_cart.shop_id != grant.shop_id:
+                return {
+                    "status": "rejected",
+                    "spoken_response": "I could not verify this store context.",
+                    "reason": "Browser cart tenant does not match the signed session grant",
+                }
+        else:
+            current_cart = CartSnapshot(shop_id=grant.shop_id, currency="USD", lines=())
         session_id = grant.anonymous_session_id
         async with session_locks.setdefault(session_id, asyncio.Lock()):
             controller = controllers.setdefault(

@@ -13,7 +13,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from ishop.domain.intent import IntentOperation, ShoppingIntent
+from ishop.domain.intent import (
+    DecisionMode,
+    IntentOperation,
+    ResponsePurpose,
+    ShoppingIntent,
+    TargetReference,
+    TurnDecision,
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +102,13 @@ class LlmInterpretationResult:
     usage: LlmUsage
     profile_id: str
     grounded_response_text: str | None = None
+    decision: TurnDecision | None = None
+
+    def get_decision(self) -> TurnDecision:
+        if self.decision is not None:
+            return self.decision
+        return TurnDecision(mode=DecisionMode.ACT, intent=self.intent)
+
 
 
 @dataclass(frozen=True)

@@ -66,6 +66,20 @@ class EvidenceSnapshot:
     query: str | None = None
 
 
+def _stem_token(token: str) -> str:
+    if token.endswith("ies") and len(token) > 4:
+        return token[:-3] + "y"
+    if token.endswith("es") and len(token) > 3:
+        return token[:-2]
+    if token.endswith("s") and not token.endswith("ss") and len(token) > 2:
+        return token[:-1]
+    return token
+
+
+def _token_matches(t1: str, t2: str) -> bool:
+    return t1 == t2 or _stem_token(t1) == _stem_token(t2)
+
+
 def product_title_matches(query: str, title: str) -> bool:
     """Match spoken/punctuated product names without choosing a similar item.
 
@@ -86,13 +100,10 @@ def product_title_matches(query: str, title: str) -> bool:
         return False
 
     def covers(smaller: list[str], larger: list[str]) -> bool:
-        # Every requested token must either occur directly or be a joined
-        # compound of adjacent title tokens. This handles ``multi location``
-        # and ``multilocation`` in both directions without fuzzy substitution.
         for token in smaller:
-            if token in larger:
+            if any(_token_matches(token, t) for t in larger):
                 continue
-            if any("".join(larger[index:index + width]) == token
+            if any(_token_matches(token, "".join(larger[index:index + width]))
                    for width in range(2, min(4, len(larger) - 0) + 1)
                    for index in range(0, len(larger) - width + 1)):
                 continue

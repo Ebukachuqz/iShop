@@ -313,10 +313,14 @@
           return;
         }
         if (Array.isArray(event.result_product_ids) && event.result_product_ids.length) {
-          const byId = new Map(this.pendingCatalogProducts.map((product) => [String(product.product_id), product]));
-          this.renderProducts(event.result_product_ids.map((id) => byId.get(String(id))).filter(Boolean));
+          const pool = (this.pendingCatalogProducts && this.pendingCatalogProducts.length) ? this.pendingCatalogProducts : (this.candidates?.products || []);
+          const byId = new Map(pool.map((product) => [String(product.product_id), product]));
+          const matched = event.result_product_ids.map((id) => byId.get(String(id))).filter(Boolean);
+          if (matched.length) {
+            this.renderProducts(matched);
+          }
         }
-        if (event.spoken_response && !event.authorized_command) this.addMessage("assistant", event.spoken_response);
+        if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
         this.playTts(event.tts_audio_chunks);
         if (event.status === "clarification_needed") {
           this.setState("clarifying");
@@ -341,7 +345,6 @@
         this.pendingReceipts.delete(event.command_id);
         if (event.verified) {
           this.setState("completed", { verifiedReceipt: receipt.result });
-          this.addMessage("assistant", "Your cart is updated and verified.");
         } else {
           const detail = shopperError(receipt.result?.errors?.[0]);
           this.setState("failed", { error: detail });
@@ -501,9 +504,24 @@
         this.pendingTranscript = text;
         this.setState("checking");
         await this.client.connect();
-        const currentCart = await this.bridge.readAuthoritativeCart();
-        const bridgeTools = typeof this.bridge.getAvailableTools === "function" ? await this.bridge.getAvailableTools() : [];
-        const catalogTools = typeof this.catalog.getAvailableTools === "function" ? await this.catalog.getAvailableTools() : [];
+        let currentCart = null;
+        try {
+          currentCart = await this.bridge.readAuthoritativeCart();
+        } catch (_) {
+          currentCart = {
+            shop_id: this.root.dataset.shopDomain || location.host,
+            currency: window.Shopify?.currency?.active || "USD",
+            lines: [],
+          };
+        }
+        let bridgeTools = [];
+        try {
+          bridgeTools = typeof this.bridge.getAvailableTools === "function" ? await this.bridge.getAvailableTools() : [];
+        } catch (_) {}
+        let catalogTools = [];
+        try {
+          catalogTools = typeof this.catalog.getAvailableTools === "function" ? await this.catalog.getAvailableTools() : [];
+        } catch (_) {}
         const availableTools = [...new Set([...bridgeTools, ...catalogTools])].sort();
         
         const combinedProducts = [];
@@ -523,7 +541,7 @@
             if (currentProduct) addProduct(currentProduct);
           } catch (_) {}
         }
-        if (this.candidates.products.length) {
+        if (this.candidates?.products?.length) {
           this.candidates.products.forEach(addProduct);
         }
 

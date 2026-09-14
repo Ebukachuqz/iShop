@@ -46,9 +46,12 @@ from ishop.commerce.verifier import (
 )
 from ishop.domain.intent import (
     BudgetConstraint,
+    DecisionMode,
     IntentOperation,
     QuantityChange,
+    ResponsePurpose,
     ShoppingIntent,
+    TurnDecision,
 )
 from ishop.domain.models import (
     AuthorizedCommand,
@@ -196,6 +199,8 @@ class ControllerTurnResult:
 class ShoppingController:
     """Provider-neutral async shopping reasoning and execution controller."""
 
+    MAX_TURN_STEPS = 8
+
     def __init__(
         self,
         llm_provider: LlmProvider,
@@ -211,7 +216,6 @@ class ShoppingController:
         self.tool_registry = ToolRegistry()
 
     def get_session_state(self, session_id: str) -> ControllerSessionState:
-        """Get or initialize session-scoped state."""
         if session_id not in self._sessions:
             self._sessions[session_id] = ControllerSessionState(session_id=session_id)
         return self._sessions[session_id]
@@ -371,8 +375,8 @@ class ShoppingController:
         # 4. Interpret once, then retain the validated intent while read-only
         # storefront evidence is fetched for this same turn.
         intent = sess.pending_intents.get(pending_key) if evidence.query is not None else None
+        intent_result: LlmInterpretationResult | None = None
         if intent is None:
-            intent_result: LlmInterpretationResult | None = None
             attempts = 0
             last_err: Exception | None = None
             while attempts <= self.max_llm_retries:
@@ -409,6 +413,33 @@ class ShoppingController:
                     status=status,
                     spoken_response="This request was superseded by a newer turn or cancelled.",
                     reason=f"Aborted after async reasoning: {reason}",
+                )
+
+        decision = intent_result.get_decision() if intent_result else None
+        if decision is not None:
+            if decision.mode == DecisionMode.RESPOND:
+                is_refusal = bool(decision.response_purpose and decision.response_purpose == ResponsePurpose.REFUSAL)
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="rejected" if is_refusal else "completed",
+                    spoken_response=decision.response_text,
+                    extracted_intent=intent,
+                    reason=f"Conversational response ({decision.response_purpose.value if decision.response_purpose else 'general'}) with zero side effects",
+                )
+            elif decision.mode == DecisionMode.CLARIFY:
+                return ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request_revision=request_revision,
+                    page_epoch=page_epoch,
+                    status="clarification_needed",
+                    spoken_response=decision.clarification_prompt or decision.response_text,
+                    extracted_intent=intent,
+                    clarification_options=decision.clarification_options,
+                    reason="Model requested clarification before acting",
                 )
 
         normalized_transcript = transcript.strip().casefold()
@@ -520,28 +551,35 @@ class ShoppingController:
 
         # Follow-up: "open the cheaper one" / "take me to the cheaper one" / "cheaper one"
         wants_cheaper_followup = any(phrase in lower_transcript for phrase in ("cheaper one", "cheapest one", "cheaper item", "cheaper"))
-        if wants_cheaper_followup and sess.comparison_context and "product_ids" in sess.comparison_context:
-            comp_ids = sess.comparison_context["product_ids"]
-            if len(comp_ids) == 2 and all(cid in evidence.products for cid in comp_ids):
-                prod1 = evidence.products[comp_ids[0]]
-                prod2 = evidence.products[comp_ids[1]]
-                price1 = min(v.price for v in prod1.variants)
-                price2 = min(v.price for v in prod2.variants)
-                if price1 < price2:
-                    target_prod = prod1
-                elif price2 < price1:
-                    target_prod = prod2
-                else:
-                    target_prod = None
+        if wants_cheaper_followup:
+            target_prod = None
+            if sess.comparison_context and "product_ids" in sess.comparison_context:
+                comp_ids = sess.comparison_context["product_ids"]
+                if len(comp_ids) == 2 and all(cid in evidence.products for cid in comp_ids):
+                    prod1 = evidence.products[comp_ids[0]]
+                    prod2 = evidence.products[comp_ids[1]]
+                    price1 = min(v.price for v in prod1.variants)
+                    price2 = min(v.price for v in prod2.variants)
+                    if price1 < price2:
+                        target_prod = prod1
+                    elif price2 < price1:
+                        target_prod = prod2
+                    else:
+                        target_prod = None
+                        return ControllerTurnResult(
+                            session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                            f"Both {prod1.title} and {prod2.title} are priced at {price1}. Which one would you like to open?",
+                            intent,
+                            reason="Compared products have identical prices; tie requires clarification",
+                            clarification_options=(prod1.title, prod2.title),
+                        )
+            elif sess.active_search_product_ids:
+                search_prods = [evidence.products[pid] for pid in sess.active_search_product_ids if pid in evidence.products]
+                if search_prods:
+                    search_prods.sort(key=lambda p: min(v.price for v in p.variants))
+                    target_prod = search_prods[0]
 
-                if target_prod is None:
-                    return ControllerTurnResult(
-                        session_id, turn_id, request_revision, page_epoch, "clarification_needed",
-                        f"Both {prod1.title} and {prod2.title} are priced at {price1}. Which one would you like to open?",
-                        intent,
-                        reason="Compared products have identical prices; tie requires clarification",
-                        clarification_options=(prod1.title, prod2.title),
-                    )
+            if target_prod is not None:
                 wants_nav = any(phrase in lower_transcript for phrase in ("open", "take me", "go to", "show", "navigate", "preview"))
                 intent = replace(
                     intent,
@@ -591,13 +629,13 @@ class ShoppingController:
 
         # 3. Compound search & open (e.g. "Find the cheapest available snowboard and open it")
         if (
-            intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE)
-            and any(phrase in lower_transcript for phrase in ("open it", "open the cheapest", "take me to it", "open"))
+            any(phrase in lower_transcript for phrase in ("open it", "open the cheapest", "take me to it", "open"))
             and any(phrase in lower_transcript for phrase in ("cheapest", "lowest", "least expensive"))
         ):
+            target_query = intent.product_query if (intent.product_query and intent.product_query not in ("it", "compare")) else None
             matching_available = [
                 p for p in evidence.products.values()
-                if (not intent.product_query or product_title_matches(intent.product_query, p.title))
+                if (not target_query or product_title_matches(target_query, p.title))
                 and any(v.available_for_sale for v in p.variants)
             ]
             if matching_available:
@@ -737,6 +775,57 @@ class ShoppingController:
                 reason="Compound search-and-add request requires an explicit selected product",
             )
 
+        is_home = (intent.product_query or "").strip().casefold() in ("home", "home page", "storefront root", "/") or any(p in lower_transcript for p in ("go home", "take me home", "home page"))
+        is_back = (intent.product_query or "").strip().casefold() in ("back", "previous", "previous page") or any(p in lower_transcript for p in ("go back", "take me back", "previous page"))
+        if intent.operation == IntentOperation.NAVIGATE and (is_home or is_back):
+            if is_home:
+                command = AuthorizedCommand(
+                    command_id=f"cmd_{uuid.uuid4().hex}", session_id=session_id,
+                    shop_id=current_cart.shop_id, turn_id=turn_id,
+                    request_revision=request_revision, page_epoch=page_epoch,
+                    expires_at_ms=now + 30_000,
+                    operation=CommandOperation.NAVIGATE_STOREFRONT,
+                    parameters={"url": "/"},
+                    expected_cart_fingerprint=current_cart.fingerprint(),
+                )
+                return ControllerTurnResult(
+                    session_id=session_id, turn_id=turn_id,
+                    request_revision=request_revision, page_epoch=page_epoch,
+                    status="completed",
+                    spoken_response="Navigating to the home page.",
+                    extracted_intent=intent, authorized_command=command,
+                    selected_tool=None,
+                )
+            if is_back:
+                prev_path = sess.previous_page.get("path") if sess.previous_page else (page_context.get("previous_path") if page_context else None)
+                if prev_path and isinstance(prev_path, str) and prev_path.startswith("/") and not prev_path.startswith("/checkout") and not prev_path.startswith("/account"):
+                    command = AuthorizedCommand(
+                        command_id=f"cmd_{uuid.uuid4().hex}", session_id=session_id,
+                        shop_id=current_cart.shop_id, turn_id=turn_id,
+                        request_revision=request_revision, page_epoch=page_epoch,
+                        expires_at_ms=now + 30_000,
+                        operation=CommandOperation.NAVIGATE_STOREFRONT,
+                        parameters={"url": prev_path},
+                        expected_cart_fingerprint=current_cart.fingerprint(),
+                    )
+                    return ControllerTurnResult(
+                        session_id=session_id, turn_id=turn_id,
+                        request_revision=request_revision, page_epoch=page_epoch,
+                        status="completed",
+                        spoken_response="Navigating back to the previous page.",
+                        extracted_intent=intent, authorized_command=command,
+                        selected_tool=None,
+                    )
+                else:
+                    return ControllerTurnResult(
+                        session_id=session_id, turn_id=turn_id,
+                        request_revision=request_revision, page_epoch=page_epoch,
+                        status="completed",
+                        spoken_response="I don't have a previous store page recorded in this session. Would you like to go to the home page?",
+                        extracted_intent=intent,
+                        reason="No valid previous store page recorded in session",
+                    )
+
         expected_tools = {
             IntentOperation.SEARCH: {"search_catalog"},
             IntentOperation.BROWSE: {"browse_store", "search_catalog"},
@@ -746,7 +835,7 @@ class ShoppingController:
             IntentOperation.ADD_TO_CART: {"update_cart"},
             IntentOperation.UPDATE_QUANTITY: {"update_cart"},
             IntentOperation.REMOVE_FROM_CART: {"update_cart"},
-            IntentOperation.NAVIGATE: {"get_product", "show_variant"},
+            IntentOperation.NAVIGATE: {"get_product", "show_variant", "browse_store"},
             IntentOperation.REQUEST_CHECKOUT: {"proceed_to_checkout"},
             IntentOperation.CANCEL_CART: {"cancel_cart"},
             IntentOperation.MANAGE_ORDERS: {"manage_orders"},
@@ -1320,6 +1409,20 @@ class ShoppingController:
         current_cart: CartSnapshot,
     ) -> ControllerTurnResult:
         total_items = sum(l.quantity for l in current_cart.lines)
+        lower_span = f"{intent.supporting_transcript_span} {intent.original_language_wording}".casefold()
+        wants_open = any(phrase in lower_span for phrase in ("open cart", "open my cart", "take me to my cart", "take me to cart", "go to cart", "navigate to cart"))
+        command = None
+        if wants_open:
+            command = AuthorizedCommand(
+                command_id=f"cmd_{uuid.uuid4().hex}", session_id=session_id,
+                shop_id=current_cart.shop_id, turn_id=turn_id,
+                request_revision=request_revision, page_epoch=page_epoch,
+                expires_at_ms=int(time.time() * 1000) + 30_000,
+                operation=CommandOperation.NAVIGATE_STOREFRONT,
+                parameters={"url": "/cart"},
+                expected_cart_fingerprint=current_cart.fingerprint(),
+            )
+
         if total_items == 0:
             return ControllerTurnResult(
                 session_id=session_id,
@@ -1329,9 +1432,9 @@ class ShoppingController:
                 status="completed",
                 spoken_response="Your cart is currently empty.",
                 extracted_intent=intent,
+                authorized_command=command,
             )
 
-        lines_summary = [f"{l.quantity} item(s)" for l in current_cart.lines]
         resp = f"You have {total_items} items in your cart across {len(current_cart.lines)} line(s)."
         return ControllerTurnResult(
             session_id=session_id,
@@ -1341,6 +1444,7 @@ class ShoppingController:
             status="completed",
             spoken_response=resp,
             extracted_intent=intent,
+            authorized_command=command,
         )
 
     async def _handle_cart_mutation(
