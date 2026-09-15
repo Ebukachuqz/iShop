@@ -15,8 +15,13 @@ from ishop.domain.session_store import SessionStore
 from ishop.domain.journal import CommandJournal
 from ishop.llm.groq import GroqLlmProvider
 from ishop.orchestration.controller import ShoppingController
-from ishop.speech.sahara_stream import SaharaStreamingSession
-from ishop.tts.sahara import SaharaTtsProvider
+from ishop.speech import (
+    AssemblyAiStreamingSession,
+    ElevenLabsScribeRealtimeSession,
+    GeminiLiveStreamingSession,
+    SaharaStreamingSession,
+)
+from ishop.tts import create_default_tts_registry
 from ishop.transport.websocket import create_voice_app
 
 
@@ -26,11 +31,20 @@ logger = logging.getLogger(__name__)
 def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     active = settings or RuntimeSettings.from_environment()
 
-    def make_session(**kwargs: object) -> SaharaStreamingSession:
-        return SaharaStreamingSession(api_key=active.sahara_api_key, **kwargs)
+    session_factories = {
+        "sahara-stream-pcm": lambda **kwargs: SaharaStreamingSession(api_key=active.sahara_api_key, **kwargs),
+        "elevenlabs-scribe-v2-realtime": lambda **kwargs: ElevenLabsScribeRealtimeSession(api_key=active.elevenlabs_api_key or "", **kwargs),
+        "assemblyai-v3-realtime": lambda **kwargs: AssemblyAiStreamingSession(api_key=active.assemblyai_api_key or "", **kwargs),
+        "gemini-3.5-transcribe-live": lambda **kwargs: GeminiLiveStreamingSession(api_key=active.gemini_api_key or "", **kwargs),
+    }
 
     llm_provider = GroqLlmProvider(api_key=active.groq_api_key)
-    tts_provider = SaharaTtsProvider(api_key=active.sahara_api_key)
+    tts_registry = create_default_tts_registry(
+        sahara_api_key=active.sahara_api_key,
+        elevenlabs_api_key=active.elevenlabs_api_key or "",
+        gemini_api_key=active.gemini_api_key or "",
+        groq_api_key=active.groq_api_key or "",
+    )
     controllers: dict[str, ShoppingController] = {}
     session_locks: dict[str, asyncio.Lock] = {}
     session_store = SessionStore(active.state_db_path)
@@ -128,15 +142,17 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             }
         return response
 
-    async def synthesize_shopping_text(text: str, revision: int):
+    async def synthesize_shopping_text(text: str, revision: int, grant: Any = None):
+        profile_id = getattr(grant, "tts_profile_id", "sahara-tts-female-pidgin") if grant else "sahara-tts-female-pidgin"
+        provider = tts_registry.get(profile_id)
+        if provider is None:
+            raise ValueError(f"Unknown TTS profile: {profile_id}")
         tts_session = None
         try:
             async with asyncio.timeout(45):
-                tts_session = await asyncio.wait_for(tts_provider.synthesize(text, generation=revision), timeout=8)
+                tts_session = await asyncio.wait_for(provider.synthesize(text, generation=revision), timeout=8)
                 async for chunk in tts_session.chunks():
-                    yield {"audio_base64": base64.b64encode(chunk.audio).decode("ascii"),
-                        "generation": chunk.generation, "sample_rate": chunk.sample_rate,
-                        "channels": chunk.channels, "format": chunk.format}
+                    yield chunk.to_dict()
         finally:
             if tts_session is not None:
                 await tts_session.cancel()
@@ -144,9 +160,16 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     app = create_voice_app(
         signing_secret=active.signing_secret,
         allowed_origins=set(active.allowed_origins),
-        session_factories={"sahara-stream-pcm": make_session},
+        session_factories=session_factories,
         allowed_llm_profiles={"groq-gpt-oss-120b"},
-        allowed_tts_profiles={"sahara-tts-female-pcm"},
+        allowed_tts_profiles={
+            "sahara-tts-female-pidgin",
+            "sahara-tts-female-pcm",
+            "elevenlabs-tts-female-stream",
+            "elevenlabs-tts-female-ws",
+            "gemini-tts-female-stream",
+            "groq-orpheus-tts-female",
+        },
         control_secret=active.control_secret,
         shopping_turn_handler=handle_shopping_turn,
         command_journal=command_journal,

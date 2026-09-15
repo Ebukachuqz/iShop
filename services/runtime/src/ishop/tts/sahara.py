@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -9,7 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 from urllib.parse import urlencode
 
-from ishop.tts.base import TtsAudioChunk, TtsProvider, TtsProviderError, TtsSession
+from ishop.tts.base import TtsAudioChunk, TtsCapabilities, TtsProvider, TtsProviderError, TtsSession
 
 SAHARA_TTS_WS_URL = "wss://infer.voice.intron.io/tts/v1/stream"
 
@@ -23,10 +24,11 @@ async def _default_connect(url: str, headers: dict[str, str]):
 
 
 class SaharaTtsSession(TtsSession):
-    def __init__(self, socket: Any, text: str, generation: int):
+    def __init__(self, socket: Any, text: str, generation: int, reply_id: str | None = None):
         self._socket = socket
         self._text = text
         self._generation = generation
+        self._reply_id = reply_id
         self._text_chunks = _split_text(text)
         self._closed = False
 
@@ -60,12 +62,18 @@ class SaharaTtsSession(TtsSession):
                 status = payload.get("processing_status") or payload.get("processing_staus")
                 encoded = payload.get("audio_base_64")
                 if kind == "FETCH_AUDIO_CHUNK" and status == "READY" and encoded:
+                    fmt = str(payload.get("extension", ".wav")).lstrip(".")
+                    is_final = chunk_id >= len(self._text_chunks)
                     yield TtsAudioChunk(
-                        base64.b64decode(encoded, validate=True),
-                        self._generation,
+                        audio=base64.b64decode(encoded, validate=True),
+                        generation=self._generation,
+                        reply_id=self._reply_id,
+                        sequence=chunk_id,
+                        is_final=is_final,
                         sample_rate=_optional_int(payload.get("audio_config_frame_rate")),
                         channels=_optional_int(payload.get("audio_config_num_channels")),
-                        format=str(payload.get("extension", ".wav")).lstrip("."),
+                        format=fmt,
+                        container=fmt,
                     )
                     chunk_id += 1
                     requested_chunk = None
@@ -74,6 +82,7 @@ class SaharaTtsSession(TtsSession):
                         committed = True
                 elif kind == "FETCH_AUDIO_CHUNK" and status == "PROCESSING":
                     requested_chunk = None
+                    await asyncio.sleep(0.05)
                 elif kind == "COMMITTED_AUDIO":
                     break
         finally:
@@ -111,8 +120,8 @@ class SaharaTtsProvider(TtsProvider):
         self,
         api_key: str | None = None,
         *,
-        language: str = "en",
-        accent: str = "yoruba",
+        language: str = "pcm",
+        accent: str = "pidgin",
         gender: str = "female",
         output_format: str = "wav",
         endpoint_url: str | None = None,
@@ -126,7 +135,25 @@ class SaharaTtsProvider(TtsProvider):
         self._endpoint_url = endpoint_url or os.getenv("SAHARA_TTS_WS_URL", SAHARA_TTS_WS_URL)
         self._connector = connector or _default_connect
 
-    async def synthesize(self, text: str, generation: int) -> TtsSession:
+    @property
+    def capabilities(self) -> TtsCapabilities:
+        has_key = bool(self._api_key)
+        return TtsCapabilities(
+            input_streaming=True,
+            output_streaming=True,
+            encoding="wav",
+            container="wav",
+            supported_sample_rates=(16000,),
+            min_text_chars=10,
+            max_text_chars=100,
+            languages=("pcm",),
+            voice_gender="female",
+            supports_cancellation=True,
+            enabled=has_key,
+            disabled_reason=None if has_key else "SAHARA_API_KEY not configured",
+        )
+
+    async def synthesize(self, text: str, generation: int, reply_id: str | None = None) -> TtsSession:
         if not self._api_key:
             raise TtsProviderError("SAHARA_API_KEY not configured", "sahara", False)
         chunks = _split_text(text)
@@ -144,7 +171,7 @@ class SaharaTtsProvider(TtsProvider):
             f"{self._endpoint_url}?{query}",
             {"Authorization": f"Bearer {self._api_key}"},
         )
-        session = SaharaTtsSession(socket, text, generation)
+        session = SaharaTtsSession(socket, text, generation, reply_id=reply_id)
         try:
             await session.begin()
         except BaseException:

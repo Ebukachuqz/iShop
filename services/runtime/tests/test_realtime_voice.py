@@ -119,7 +119,7 @@ def test_sahara_tts_uses_female_profile_and_preserves_generation():
 
     socket, chunks = asyncio.run(run())
     assert "voice_gender=female" in socket.url
-    assert "voice_accent=yoruba" in socket.url
+    assert "voice_accent=pidgin" in socket.url
     assert chunks[0].audio == b"RIFFsample"
     assert chunks[0].generation == 4
     assert socket.closed is True

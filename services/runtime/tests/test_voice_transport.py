@@ -1,5 +1,6 @@
 """Integration tests for authenticated browser voice transport."""
 
+import asyncio
 import time
 
 import pytest
@@ -23,6 +24,7 @@ class FakeRealtimeSession:
         self.audio = []
         self.committed = False
         self.canceled = False
+        self._commit_event = asyncio.Event()
 
     async def start(self):
         return SpeechStreamEvent(SpeechEventKind.SESSION_STARTED, "provider-session", self.revision)
@@ -32,11 +34,16 @@ class FakeRealtimeSession:
 
     async def commit(self):
         self.committed = True
+        self._commit_event.set()
 
     async def cancel(self):
         self.canceled = True
+        self._commit_event.set()
 
     async def events(self):
+        await self._commit_event.wait()
+        if self.canceled:
+            return
         yield SpeechStreamEvent(
             SpeechEventKind.PARTIAL_TRANSCRIPT,
             "provider-session",

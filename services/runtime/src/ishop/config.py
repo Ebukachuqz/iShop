@@ -17,6 +17,9 @@ class RuntimeSettings:
     record_audio: bool
     control_secret: str | None = None
     groq_api_key: str | None = None
+    elevenlabs_api_key: str | None = None
+    assemblyai_api_key: str | None = None
+    gemini_api_key: str | None = None
     state_db_path: str = ".ishop/runtime-state.sqlite3"
 
     @classmethod
@@ -48,15 +51,18 @@ class RuntimeSettings:
         if control_secret is not None and len(control_secret) < 32:
             raise ValueError("RUNTIME_CONTROL_SECRET must contain at least 32 characters")
         return cls(
-            host,
-            port,
-            signing_secret,
-            frozenset(origins),
-            sahara_api_key,
-            record_audio,
-            control_secret,
-            os.getenv("GROQ_API_KEY", "").strip() or None,
-            os.getenv("ISHOP_STATE_DB", ".ishop/runtime-state.sqlite3").strip() or ".ishop/runtime-state.sqlite3",
+            host=host,
+            port=port,
+            signing_secret=signing_secret,
+            allowed_origins=frozenset(origins),
+            sahara_api_key=sahara_api_key,
+            record_audio=record_audio,
+            control_secret=control_secret,
+            groq_api_key=os.getenv("GROQ_API_KEY", "").strip() or None,
+            elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", "").strip() or None,
+            assemblyai_api_key=os.getenv("ASSEMBLYAI_API_KEY", "").strip() or os.getenv("ASSEMBLY_AI_API_KEY", "").strip() or None,
+            gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip() or None,
+            state_db_path=os.getenv("ISHOP_STATE_DB", ".ishop/runtime-state.sqlite3").strip() or ".ishop/runtime-state.sqlite3",
         )
 
 

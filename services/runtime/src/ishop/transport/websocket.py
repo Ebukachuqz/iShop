@@ -125,7 +125,14 @@ def create_voice_app(
     tts_profiles = (
         allowed_tts_profiles
         if allowed_tts_profiles is not None
-        else {"sahara-tts-female-pcm"}
+        else {
+            "sahara-tts-female-pidgin",
+            "sahara-tts-female-pcm",
+            "elevenlabs-tts-female-stream",
+            "elevenlabs-tts-female-ws",
+            "gemini-tts-female-stream",
+            "groq-orpheus-tts-female",
+        }
     )
     revocation_secret = control_secret or signing_secret
     if len(revocation_secret) < 32:
@@ -153,6 +160,7 @@ def create_voice_app(
 
         await websocket.accept()
         session: RealtimeSpeechSession | None = None
+        events_task: asyncio.Task[None] | None = None
         revision: int | None = None
         grant: SessionGrant | None = None
         pending_commands: dict[str, dict[str, Any]] = {}
@@ -169,20 +177,45 @@ def create_voice_app(
                 "source": "shopping" if shopping else "speech",
             })
 
+        async def _pump_speech_events(active_session: RealtimeSpeechSession) -> None:
+            try:
+                async for event in active_session.events():
+                    await websocket.send_json(_event_payload(event))
+            except (asyncio.CancelledError, WebSocketDisconnect):
+                pass
+            except Exception as exc:
+                logger.debug("Speech event pump error: %s", exc)
+
         async def deliver_tts(result: dict[str, Any], payload: dict[str, Any]) -> None:
             try:
-                output = shopping_tts_handler(  # type: ignore[misc]
-                    str(result["spoken_response"]),
-                    int(payload["request_revision"]),
-                )
-                async def send_chunks(chunks):
-                    await websocket.send_json({
-                        "type": "shopping_tts",
-                        "turn_id": payload["turn_id"],
-                        "request_revision": payload["request_revision"],
-                        "page_epoch": payload["page_epoch"],
-                        "tts_audio_chunks": chunks,
-                    })
+                try:
+                    output = shopping_tts_handler(  # type: ignore[misc]
+                        str(result["spoken_response"]),
+                        int(payload["request_revision"]),
+                        grant,
+                    )
+                except TypeError:
+                    output = shopping_tts_handler(  # type: ignore[misc]
+                        str(result["spoken_response"]),
+                        int(payload["request_revision"]),
+                    )
+
+                async def send_chunks(chunks: list[Any]) -> None:
+                    serialized = []
+                    for c in chunks:
+                        if hasattr(c, "to_dict"):
+                            serialized.append(c.to_dict())
+                        elif isinstance(c, dict):
+                            serialized.append(c)
+                    if serialized:
+                        await websocket.send_json({
+                            "type": "shopping_tts",
+                            "turn_id": payload["turn_id"],
+                            "request_revision": payload["request_revision"],
+                            "page_epoch": payload["page_epoch"],
+                            "tts_audio_chunks": serialized,
+                        })
+
                 if hasattr(output, "__aiter__"):
                     async for chunk in output:
                         await send_chunks([chunk])
@@ -288,6 +321,9 @@ def create_voice_app(
                         await session.cancel()
                         session = None
                         continue
+                    if events_task is not None and not events_task.done():
+                        events_task.cancel()
+                    events_task = asyncio.create_task(_pump_speech_events(session))
                     await websocket.send_json(_event_payload(started))
                 elif action == "audio_base64":
                     if session is None:
@@ -308,15 +344,21 @@ def create_voice_app(
                         continue
                     try:
                         await asyncio.wait_for(session.commit(), timeout=10)
-                        async with asyncio.timeout(30):
-                            async for event in session.events():
-                                await websocket.send_json(_event_payload(event))
+                        if events_task is not None:
+                            await asyncio.wait_for(events_task, timeout=30)
                     except (SpeechProviderError, TimeoutError):
                         await _send_error(websocket, "provider_stream_failed")
                         await session.cancel()
-                    session = None
+                    finally:
+                        if events_task is not None and not events_task.done():
+                            events_task.cancel()
+                        events_task = None
+                        session = None
                 elif action == "cancel_turn":
                     cancel_pending_tts()
+                    if events_task is not None and not events_task.done():
+                        events_task.cancel()
+                        events_task = None
                     if session is not None:
                         await session.cancel()
                         session = None
@@ -402,6 +444,8 @@ def create_voice_app(
             pass
         finally:
             cancel_pending_tts()
+            if events_task is not None and not events_task.done():
+                events_task.cancel()
             if tts_tasks:
                 await asyncio.gather(*tts_tasks, return_exceptions=True)
             if session is not None:
