@@ -725,7 +725,7 @@ def test_cf26_session_persistence_roundtrip(catalog_evidence, empty_cart, tmp_pa
     assert restored_state is not None
     controller2.restore_session_state(restored_state)
 
-    # Follow up in controller 2: rank cheapest
+    # A compatibility call without a rendered observation preserves stored order.
     res = asyncio.run(
         controller2.handle_turn(
             session_id=sess_id,
@@ -738,7 +738,7 @@ def test_cf26_session_persistence_roundtrip(catalog_evidence, empty_cart, tmp_pa
         )
     )
     assert res.status == "completed"
-    assert "Beginner Park" in res.spoken_response or "450" in res.spoken_response
+    assert res.result_product_ids == tuple(catalog_evidence.products)
 
 
 def test_cf30_cancellation_during_turn_prevents_authorization(catalog_evidence, empty_cart):
@@ -892,4 +892,3 @@ def test_cf29_checkout_handoff_stops_before_payment(catalog_evidence, empty_cart
     assert res.status == "completed"
     assert res.authorized_command is not None
     assert res.authorized_command.operation == CommandOperation.HANDOFF_TO_CHECKOUT
-

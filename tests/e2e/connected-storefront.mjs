@@ -109,7 +109,11 @@ try {
   } catch (error) {
     throw new Error(`${error.message}: ${await evaluate("document.body.innerText")}`);
   }
+  await waitFor(() => evaluate("document.querySelectorAll('.drake-card').length === 3"));
   check(await evaluate("document.querySelectorAll('.drake-card').length"), 3, 'category discovery search cards');
+  check(await evaluate("location.pathname"), '/search', 'explicit discovery uses native search page');
+  check(await evaluate("document.querySelector('#product-grid').innerText.startsWith('Multi-managed Snowboard')"), true, 'native product grid is visible');
+  check(await evaluate("document.querySelector('.drake-card__title').innerText.includes('Multi-managed Snowboard')"), true, 'Drake order follows rendered grid rather than predictive suggestions');
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(cart.items.length, 0, 'category discovery does not mutate cart');
 
@@ -119,20 +123,37 @@ try {
   } catch (error) {
     throw new Error(`${error.message}: ${await evaluate("document.body.innerText")}`);
   }
+  await waitFor(() => evaluate("document.querySelectorAll('.drake-card').length === 3"));
   check(await evaluate("document.querySelectorAll('.drake-card').length"), 3, 'search result cards');
   check(await evaluate("[...document.querySelectorAll('.drake-card__variant')].some(n=>n.innerText.includes('699.95 USD'))"), true, 'decimal prices');
+  await submit('Open the second item from your search', null);
+  await waitFor(() => evaluate("location.pathname === '/products/complete-snowboard'"));
+  check(await evaluate("location.pathname"), '/products/complete-snowboard', 'second reference follows rendered native order');
+  await cdp('Runtime.evaluate', { expression: 'history.back(); true' });
+  await waitFor(() => evaluate("location.pathname === '/search' && Boolean(window.IShopDrake?.client) && Boolean(window.IShopDrake?.currentNativeSearch)"));
+  await evaluate("if (document.querySelector('.drake-panel')?.hidden) document.querySelector('.drake-launcher').click(); true");
+  await cdp('Page.navigate', { url: 'http://127.0.0.1:8765/search?q=snowboard&type=product&sort_by=price-descending' });
+  await waitFor(() => evaluate("location.pathname === '/search' && Boolean(window.IShopDrake?.currentNativeSearch)"));
+  await evaluate("document.querySelector('.drake-launcher').click(); true");
+  await submit('Open the first item from these results', null);
+  await waitFor(() => evaluate("location.pathname === '/products/multi-location-snowboard'"));
+  check(await evaluate("location.pathname"), '/products/multi-location-snowboard', 'manual native sort refreshes positional references');
+  await cdp('Page.navigate', { url: 'http://127.0.0.1:8765/search?q=snowboard&type=product&sort_by=price-ascending' });
+  await waitFor(() => evaluate("location.pathname === '/search' && Boolean(window.IShopDrake?.client) && Boolean(window.IShopDrake?.currentNativeSearch)"));
+  await evaluate("document.querySelector('.drake-launcher').click(); true");
 
   runtime.kill();
   await new Promise((resolveExit) => runtime.once('exit', resolveExit));
   runtime = spawnRuntime();
   await waitFor(async () => (await fetch('http://127.0.0.1:8765/')).ok);
   await submit('Which is cheapest in your search?');
+  await waitFor(() => evaluate("Boolean(document.querySelector('.drake-card__title'))"));
   const cardTitle = await evaluate("document.querySelector('.drake-card__title')?.innerText");
   check(cardTitle.includes('Multi-managed Snowboard'), true, 'result context restored after runtime restart');
 
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('Find snowboard')"), true, 'visible history survives runtime reconnect');
-  await submit('Which is closest to $700?');
-  check(await evaluate("document.querySelector('.drake-card__title').innerText.includes('Complete Snowboard')"), true, 'nearest-price ranking');
+  await submit('Which is closest to $700?', 'clarifying');
+  check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('maximum budget')"), true, 'nearest-price request asks for a native-search-compatible bound');
 
   await submit('Browse the store collections');
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('Snowboards')"), true, 'collection browse');
@@ -177,8 +198,8 @@ try {
   await submit('Preview the Ice Complete Snowboard', null);
   await waitFor(() => evaluate("location.pathname === '/products/complete-snowboard' && location.search === '?variant=101'"));
   await waitFor(() => evaluate("document.querySelector('#ishop-drake-root')?.dataset.bootstrapState === 'ready'"));
-  check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('Empty my entire cart')"), true, 'bounded recent conversation restored after navigation document');
-  check(await evaluate("window.IShopDrake.pageContext.previous_path === '/'"), true, 'previous page recorded');
+  check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('Preview the Ice Complete Snowboard')"), true, 'bounded recent conversation restored after navigation document');
+  check(await evaluate("window.IShopDrake.pageContext.previous_path.startsWith('/search?')"), true, 'native search page recorded as previous page');
   await waitFor(() => evaluate("Boolean(window.IShopDrake?.client && window.IShopDrake?.bridge)"));
   await evaluate("document.querySelector('.drake-launcher').click(); true");
   await submit('Add this product to my cart', 'clarifying');

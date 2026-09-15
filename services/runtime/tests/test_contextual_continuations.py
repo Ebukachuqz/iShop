@@ -183,6 +183,24 @@ def test_cs01_search_and_ordinal_navigation(four_item_evidence, empty_cart):
     assert t2.authorized_command.parameters["url"] == "/products/summit-powder-snowboard"
 
 
+def test_native_displayed_search_replaces_stale_result_order(four_item_evidence, empty_cart):
+    controller = ShoppingController(llm_provider=FakeLlmProvider())
+    reversed_products = dict(reversed(tuple(four_item_evidence.products.items())))
+    displayed_evidence = replace(four_item_evidence, products=reversed_products, query="snowboard")
+    result = asyncio.run(controller.handle_turn(
+        "sess_native", "turn_native", 1, 2, "open the second item from these results",
+        displayed_evidence, empty_cart,
+        displayed_search={
+            "schema_version": "1.0.0", "adapter": "shopify-theme-product-grid-v1",
+            "actual_url": "/search?q=snowboard&sort_by=price-descending", "query": "snowboard",
+            "sort_by": "price-descending", "min_price": None, "max_price": None,
+            "page": 1, "rendered_count": 4,
+        },
+    ))
+    assert result.authorized_command is not None
+    assert result.authorized_command.parameters["url"] == "/products/freestyle-carbon-snowboard"
+
+
 def test_cs02_cs03_target_lookup_and_invalid_product(four_item_evidence, empty_cart):
     """CS-02 & CS-03: Known product navigates; missing product does not navigate."""
     controller = ShoppingController(llm_provider=FakeLlmProvider())
@@ -733,4 +751,3 @@ def test_cs24_view_cart_in_place(four_item_evidence, empty_cart):
     assert res.status == "completed"
     assert "empty" in res.spoken_response
     assert res.authorized_command is None
-

@@ -65,6 +65,7 @@ async def shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> dict[st
             tool_observation=payload.get("tool_observation"),
             context_phase=payload.get("context_phase", "action"),
             cart_details=(cart_raw or {}).get("display_lines", []),
+            displayed_search=payload.get("displayed_search"),
         )
         session_store.save(session_id, controller.export_session_state(session_id))
     response: dict[str, Any] = {
@@ -91,13 +92,20 @@ app = create_voice_app(signing_secret=SECRET, allowed_origins={ORIGIN}, session_
                        shopping_turn_handler=shopping_turn, command_journal=command_journal)
 
 
-def storefront_page(*, product: bool = False) -> HTMLResponse:
+def storefront_page(*, product: bool = False, search_products: list[tuple[str, str]] | None = None) -> HTMLResponse:
     product_data = (' data-current-product-id="1" data-current-product-handle="complete-snowboard"' if product else '')
+    search_grid = ""
+    if search_products is not None:
+        cards = "".join(f'<li class="grid__item"><a href="/products/{handle}">{title}</a><a aria-hidden="true" href="/products/{handle}">image</a></li>'
+                        for handle, title in search_products)
+        search_grid = f'<main><ul id="product-grid" data-native-search-results>{cards}</ul></main>'
     return HTMLResponse(f"""<!doctype html><html><body>
 <a id="cart-icon-bubble" href="/cart"><span class="visually-hidden">Cart</span></a>
 <div id="ishop-drake-root" data-shop-domain="{SHOP}" data-bootstrap-url="/bootstrap"
+ data-search-url="/search"
  data-bootstrap-script-url="/assets/drake-bootstrap.js" data-bridge-script-url="/assets/drake-bridge.js"
  data-catalog-script-url="/assets/drake-catalog.js" data-voice-ws-url="ws://127.0.0.1:8765/ws"{product_data}></div>
+{search_grid}
 <script src="/assets/drake-voice.js"></script><script src="/assets/drake-widget.js"></script>
 <script src="/assets/drake-bootstrap.js"></script></body></html>""")
 
@@ -120,6 +128,29 @@ async def multi_location_page() -> HTMLResponse:
 @app.get("/products/multi-managed-snowboard")
 async def multi_managed_page() -> HTMLResponse:
     return storefront_page(product=True)
+
+
+@app.get("/search")
+async def native_search_page(request: Request) -> HTMLResponse:
+    # Deliberately differs from predictive-search order. This is the order the
+    # shopper actually sees and therefore the order Drake must preserve.
+    products = [
+        ("multi-managed-snowboard", "Multi-managed Snowboard"),
+        ("complete-snowboard", "Complete Snowboard"),
+        ("multi-location-snowboard", "Multi-location Snowboard"),
+    ]
+    maximum = request.query_params.get("filter.v.price.lte")
+    minimum = request.query_params.get("filter.v.price.gte")
+    prices = {"multi-managed-snowboard": 629.95, "complete-snowboard": 699.95, "multi-location-snowboard": 729.95}
+    if maximum is not None:
+        products = [item for item in products if prices[item[0]] <= float(maximum)]
+    if minimum is not None:
+        products = [item for item in products if prices[item[0]] >= float(minimum)]
+    if request.query_params.get("sort_by") == "price-descending":
+        products.sort(key=lambda item: prices[item[0]], reverse=True)
+    elif request.query_params.get("sort_by") == "price-ascending":
+        products.sort(key=lambda item: prices[item[0]])
+    return storefront_page(search_products=products)
 
 
 @app.get("/account")

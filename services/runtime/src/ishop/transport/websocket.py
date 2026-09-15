@@ -466,7 +466,7 @@ def _make_sahara_session(**kwargs: Any) -> RealtimeSpeechSession:
 
 def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> None:
     required = {"type", "turn_id", "request_revision", "page_epoch", "transcript"}
-    allowed = required | {"evidence", "current_cart", "current_product_id", "page_context", "available_tools", "tool_observation", "context_phase"}
+    allowed = required | {"evidence", "current_cart", "current_product_id", "page_context", "available_tools", "tool_observation", "context_phase", "displayed_search"}
     if not required <= set(payload) or not set(payload) <= allowed:
         raise ValueError("Invalid shopping turn fields")
     if payload["type"] != "shopping_turn":
@@ -516,6 +516,21 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
             raise ValueError("Invalid tool observation data")
         if len(json.dumps(observation, separators=(",", ":"))) > 100_000:
             raise ValueError("Tool observation is too large")
+    displayed = payload.get("displayed_search")
+    if displayed is not None:
+        allowed_displayed = {"schema_version", "adapter", "actual_url", "query", "sort_by", "min_price", "max_price", "page", "rendered_count"}
+        if (not isinstance(displayed, dict) or set(displayed) - allowed_displayed
+                or displayed.get("schema_version") != "1.0.0"
+                or displayed.get("adapter") != "shopify-theme-product-grid-v1"
+                or not isinstance(displayed.get("query"), str)
+                or not displayed["query"].strip() or len(displayed["query"]) > 500
+                or not isinstance(displayed.get("actual_url"), str)
+                or not displayed["actual_url"].startswith("/") or displayed["actual_url"].startswith("//")
+                or not displayed["actual_url"].split("?", 1)[0].rstrip("/").endswith("/search")
+                or displayed.get("sort_by") not in {"relevance", "price-ascending", "price-descending"}
+                or not isinstance(displayed.get("rendered_count"), int)
+                or displayed["rendered_count"] < 0 or displayed["rendered_count"] > 50):
+            raise ValueError("Invalid displayed search observation")
 
 
 def _verify_reported_cart_result(command: dict[str, Any], result: dict[str, Any]) -> bool:

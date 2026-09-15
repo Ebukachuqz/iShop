@@ -98,6 +98,7 @@
       this.messageHistory = [];
       this.historyKey = `ishop:messages:${root.dataset.shopDomain || location.host}`;
       this.revisionKey = `ishop:revision:${root.dataset.shopDomain || location.host}`;
+      this.nativeSearchKey = `ishop:native-search:${root.dataset.shopDomain || location.host}`;
       this.lastRevision = 0;
       this.pageEpoch = 1;
       this.pageContext = null;
@@ -236,6 +237,7 @@
       this.currentProductHandle = integrations?.currentProductHandle || null;
       this.client.onEvent = (event) => this.handleVoiceEvent(event);
       this.setState("ready");
+      this.initializePageSearch();
     }
     setOpen(open) {
       this.open = Boolean(open);
@@ -343,6 +345,7 @@
             event.turn_id,
             event.request_revision,
             event.selected_tool || "search_catalog",
+            event.tool_request,
           );
           return;
         }
@@ -431,58 +434,24 @@
         card.append(choose);
         this.cards.append(card);
       });
-      this.renderStorefrontResults(this.candidates.products, query || this.pendingCatalogQuery);
     }
 
-    renderStorefrontResults(products, query = null) {
-      if (typeof document === "undefined") return;
-      let container = document.getElementById("ishop-drake-results");
-      if (!container) {
-        container = document.createElement("section");
-        container.id = "ishop-drake-results";
-        container.className = "drake-storefront-results";
-        container.setAttribute("aria-label", "Drake Storefront Results");
-        const parent = document.querySelector("main") || document.body;
-        if (parent && parent.prepend) parent.prepend(container);
-      }
-      container.replaceChildren();
-      if (!products || !products.length) {
-        container.hidden = true;
-        return;
-      }
-      container.hidden = false;
-      const header = element("div", "drake-storefront-header");
-      const titleWrap = element("div");
-      const heading = element("h2", "drake-storefront-title", query ? `Drake Results: ${query}` : "Drake Search Results");
-      const count = element("p", "drake-storefront-summary", `Showing ${products.length} matching ${products.length === 1 ? "item" : "items"}`);
-      titleWrap.append(heading, count);
-      const dismissBtn = element("button", "drake-storefront-dismiss", "Dismiss");
-      dismissBtn.type = "button";
-      dismissBtn.addEventListener("click", () => { container.hidden = true; });
-      header.append(titleWrap, dismissBtn);
-
-      const grid = element("div", "drake-storefront-grid");
-      products.forEach((product, index) => {
-        const card = element("article", "drake-storefront-card");
-        card.append(element("h3", "drake-storefront-card__title", `${index + 1}. ${product.title}`));
-        const firstVariant = (product.variants || [])[0];
-        const priceStr = firstVariant?.price ? `${firstVariant.price.amount} ${firstVariant.price.currency}` : "Price unavailable";
-        card.append(element("p", "drake-storefront-card__price", priceStr));
-        const opts = (product.options || []).join(" · ");
-        if (opts) card.append(element("p", "drake-storefront-card__options", `Options: ${opts}`));
-        if (product.url) {
-          const link = element("a", "drake-storefront-card__link", `View item ${index + 1}`);
-          link.href = product.url;
-          card.append(link);
-        }
-        grid.append(card);
-      });
-      container.append(header, grid);
-    }
-
-    async retrieveCatalogEvidence(query, turnId, requestRevision, toolName = "search_catalog") {
+    async retrieveCatalogEvidence(query, turnId, requestRevision, toolName = "search_catalog", toolRequest = null) {
       try {
         if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
+        if (toolName === "search_catalog" && this.catalog?.nativeSearch) {
+          const arguments_ = { ...(toolRequest?.arguments || {}), query };
+          const objective = {
+            schema_version: "1.0.0", shop_id: this.root.dataset.shopDomain || location.host,
+            turn_id: turnId, request_revision: requestRevision, transcript: this.pendingTranscript,
+            arguments: arguments_, expires_at_ms: Date.now() + 120000,
+          };
+          sessionStorage.setItem(this.nativeSearchKey, JSON.stringify(objective));
+          const destination = this.catalog.nativeSearch.buildUrl(arguments_);
+          this.setState("checking");
+          location.assign(destination);
+          return;
+        }
         this.setState("checking");
         let products = [];
         const matchingCandidate = this.candidates.products.find((p) =>
@@ -515,6 +484,71 @@
         }, this.pendingTurn, observation);
       } catch (_) {
         this.setState("failed", { error: "I couldn’t search this store right now. Please try again." });
+      }
+    }
+
+    async resumeNativeSearch() {
+      if (this.nativeSearchResuming) return;
+      let objective = null;
+      try { objective = JSON.parse(sessionStorage.getItem(this.nativeSearchKey) || "null"); } catch (_) {}
+      if (!objective || objective.schema_version !== "1.0.0") return;
+      if (objective.shop_id !== (this.root.dataset.shopDomain || location.host) || objective.expires_at_ms < Date.now()) {
+        sessionStorage.removeItem(this.nativeSearchKey);
+        return;
+      }
+      this.nativeSearchResuming = true;
+      this.setOpen(true);
+      this.pendingTranscript = String(objective.transcript || "");
+      this.pendingTurn = { turnId: objective.turn_id, requestRevision: objective.request_revision, pageEpoch: this.pageEpoch };
+      this.client.revision = Math.max(this.client.revision, Number(objective.request_revision));
+      this.setState("checking");
+      try {
+        const observed = await this.catalog.nativeSearch.observe(objective.arguments, 20);
+        this.currentNativeSearch = observed;
+        this.pendingCatalogProducts = observed.products;
+        this.pendingCatalogQuery = objective.arguments.query;
+        const observation = {
+          tool: "search_catalog", ok: true, source: "native_search_rendered",
+          data: { products: observed.products, coverage: "rendered_page", native_search: observed.native_search },
+          observed_at_ms: Date.now(),
+        };
+        sessionStorage.removeItem(this.nativeSearchKey);
+        await this.submitShoppingRequest(this.pendingTranscript, { query: this.pendingCatalogQuery, products: observed.products }, this.pendingTurn, observation);
+      } catch (error) {
+        sessionStorage.removeItem(this.nativeSearchKey);
+        console.error('[Drake] Native search observation failed:', error);
+        this.addMessage("assistant", "I reached the store search page, but I couldn’t reliably read its displayed product order.");
+        this.pendingTurn = null;
+        this.setState("failed", { suppressError: true });
+      } finally {
+        this.nativeSearchResuming = false;
+      }
+    }
+
+    async initializePageSearch() {
+      if (sessionStorage.getItem(this.nativeSearchKey)) {
+        await this.resumeNativeSearch();
+        return;
+      }
+      await this.refreshCurrentNativeSearch();
+    }
+
+    async refreshCurrentNativeSearch() {
+      if (!this.catalog?.nativeSearch || !location.pathname.endsWith('/search')) return;
+      const params = new URLSearchParams(location.search);
+      if (!params.get('q')) return;
+      const arguments_ = { query: params.get('q') };
+      if (params.get('sort_by')) arguments_.sort_by = params.get('sort_by');
+      if (params.get('filter.v.price.gte')) arguments_.min_price = params.get('filter.v.price.gte');
+      if (params.get('filter.v.price.lte')) arguments_.max_price = params.get('filter.v.price.lte');
+      try {
+        const observed = await this.catalog.nativeSearch.observe(arguments_, 20);
+        this.currentNativeSearch = observed;
+        this.pendingCatalogProducts = observed.products;
+        this.pendingCatalogQuery = arguments_.query;
+        this.candidates = new CandidateSet(observed.products);
+      } catch (_) {
+        this.currentNativeSearch = null;
       }
     }
 
@@ -609,6 +643,14 @@
           page_context: this.pageContext,
           context_phase: includeStoreContext ? "action" : "decision",
         };
+        if (!includeStoreContext && this.currentNativeSearch) {
+          payload.evidence = {
+            snapshot_id: `native_${Date.now()}`, shop_id: this.root.dataset.shopDomain || location.host,
+            currency: window.Shopify?.currency?.active || "USD", observed_at_ms: Date.now(),
+            query: this.currentNativeSearch.native_search.query, products: this.currentNativeSearch.products,
+          };
+          payload.displayed_search = this.currentNativeSearch.native_search;
+        }
         if (includeStoreContext) {
           payload.evidence = {
             snapshot_id: `browser_${Date.now()}`,

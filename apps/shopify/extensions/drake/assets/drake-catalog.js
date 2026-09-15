@@ -186,10 +186,104 @@ export class AjaxCatalogAdapter {
   }
 }
 
+export class NativeSearchAdapter {
+  constructor({ searchUrl = null, fetchImpl = null, documentRef = null, locationRef = null, currency = null } = {}) {
+    this.searchUrl = searchUrl || '/search';
+    const browser = typeof window !== 'undefined' ? window : null;
+    this.fetch = fetchImpl || browser?.fetch?.bind(browser);
+    this.document = documentRef || (typeof document !== 'undefined' ? document : null);
+    this.location = locationRef || browser?.location;
+    this.currency = currency || browser?.Shopify?.currency?.active || 'USD';
+  }
+
+  buildUrl(args = {}) {
+    const target = new URL(this.searchUrl, this.location.origin);
+    if (target.origin !== this.location.origin) throw new Error('native_search_cross_origin');
+    const query = String(args.query || '').trim();
+    if (!query) throw new Error('native_search_query_required');
+    target.search = '';
+    target.searchParams.set('q', query);
+    target.searchParams.set('type', 'product');
+    if (args.sort_by && ['relevance', 'price-ascending', 'price-descending'].includes(args.sort_by)) {
+      target.searchParams.set('sort_by', args.sort_by);
+    }
+    if (args.min_price != null) target.searchParams.set('filter.v.price.gte', String(args.min_price));
+    if (args.max_price != null) target.searchParams.set('filter.v.price.lte', String(args.max_price));
+    return `${target.pathname}${target.search}`;
+  }
+
+  async observe(expectedArgs = {}, limit = 20) {
+    const actual = new URL(this.location.href);
+    const expected = new URL(this.buildUrl(expectedArgs), actual.origin);
+    if (actual.pathname !== expected.pathname || actual.searchParams.get('q') !== expected.searchParams.get('q')) {
+      throw new Error('native_search_arrival_mismatch');
+    }
+    for (const name of ['type', 'sort_by', 'filter.v.price.gte', 'filter.v.price.lte']) {
+      const wanted = expected.searchParams.get(name);
+      if (wanted !== null && actual.searchParams.get(name) !== wanted) throw new Error(`native_search_parameter_mismatch_${name}`);
+    }
+    const roots = [...new Set([
+      this.document.querySelector('#product-grid'),
+      this.document.querySelector('main [id*="product-grid"]'),
+      this.document.querySelector('main .product-grid'),
+      this.document.querySelector('main [data-native-search-results]'),
+    ].filter(Boolean))];
+    if (roots.length !== 1) throw new Error(roots.length ? 'native_search_grid_ambiguous' : 'native_search_grid_unavailable');
+    const links = [...roots[0].querySelectorAll('a[href*="/products/"]')];
+    const ordered = [];
+    const seen = new Set();
+    for (const link of links) {
+      if (ordered.length >= Math.min(50, Math.max(1, Number(limit || 20)))) break;
+      if (link.closest('[hidden], [aria-hidden="true"]')) continue;
+      const url = new URL(link.href, actual.origin);
+      if (url.origin !== actual.origin || !url.pathname.includes('/products/')) continue;
+      const handle = decodeURIComponent(url.pathname.split('/products/')[1]?.split('/')[0] || '');
+      if (!handle || seen.has(handle)) continue;
+      seen.add(handle);
+      const response = await this.fetch(`${url.pathname}.js`, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(`native_search_product_failed_${response.status}`);
+      const product = await response.json();
+      product.url ||= `${url.pathname}${url.search}`;
+      ordered.push(product);
+    }
+    normalizeProductJsonPrices(ordered);
+    const products = normalizeCatalogProducts({ products: ordered }, { currency: this.currency });
+    const minimum = expected.searchParams.get('filter.v.price.gte');
+    const maximum = expected.searchParams.get('filter.v.price.lte');
+    const eligiblePrices = products.map((product) => (product.variants || [])
+      .filter((variant) => variant.available_for_sale !== false)
+      .map((variant) => Number(variant.price?.amount))
+      .filter((price) => Number.isFinite(price) && (minimum === null || price >= Number(minimum)) && (maximum === null || price <= Number(maximum))));
+    if ((minimum !== null || maximum !== null) && eligiblePrices.some((prices) => !prices.length)) {
+      throw new Error('native_search_filter_not_applied');
+    }
+    const sort = expected.searchParams.get('sort_by');
+    const sortPrices = eligiblePrices.map((prices) => Math.min(...prices));
+    if (sort === 'price-ascending' && sortPrices.some((price, index) => index && price < sortPrices[index - 1])) {
+      throw new Error('native_search_sort_not_applied');
+    }
+    if (sort === 'price-descending' && sortPrices.some((price, index) => index && price > sortPrices[index - 1])) {
+      throw new Error('native_search_sort_not_applied');
+    }
+    return {
+      products,
+      native_search: {
+        schema_version: '1.0.0', adapter: 'shopify-theme-product-grid-v1', actual_url: `${actual.pathname}${actual.search}`,
+        query: actual.searchParams.get('q') || '', sort_by: actual.searchParams.get('sort_by') || 'relevance',
+        min_price: actual.searchParams.get('filter.v.price.gte'), max_price: actual.searchParams.get('filter.v.price.lte'),
+        page: Number(actual.searchParams.get('page') || 1), rendered_count: ordered.length,
+      },
+    };
+  }
+}
+
 export class StorefrontCatalog {
-  constructor({ webMcp = null, ajax = null } = {}) {
+  constructor({ webMcp = null, ajax = null, nativeSearch = null } = {}) {
     this.webMcp = webMcp || new WebMcpCatalogAdapter();
     this.ajax = ajax || new AjaxCatalogAdapter();
+    this.nativeSearch = nativeSearch || (typeof document !== 'undefined'
+      ? new NativeSearchAdapter({ searchUrl: document.getElementById('ishop-drake-root')?.dataset.searchUrl || '/search' })
+      : null);
   }
   async search(query, limit = 5) {
     if (this.webMcp.isAvailable()) {

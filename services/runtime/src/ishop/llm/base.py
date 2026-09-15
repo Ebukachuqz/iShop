@@ -9,16 +9,13 @@ Adheres to:
 from __future__ import annotations
 
 import abc
-import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from ishop.domain.intent import (
     DecisionMode,
     IntentOperation,
-    ResponsePurpose,
     ShoppingIntent,
-    TargetReference,
     TurnDecision,
 )
 
@@ -148,7 +145,17 @@ def tool_arguments_for_intent(intent: ShoppingIntent, tool_name: str) -> dict[st
     """Build provider-neutral proposal arguments without minting store identifiers."""
     query = (intent.product_query or intent.supporting_transcript_span or "").strip()
     if tool_name == "search_catalog":
-        return {"query": query, "resource_types": ["product"], "limit": 8}
+        arguments = {"query": query, "resource_types": ["product"], "limit": 8}
+        if intent.budget_constraint:
+            budget = intent.budget_constraint
+            if budget.min_amount is not None:
+                arguments["min_price"] = budget.min_amount
+            if budget.max_amount is not None:
+                arguments["max_price"] = budget.max_amount
+        wording = f"{intent.supporting_transcript_span} {intent.original_language_wording}".casefold()
+        if any(term in wording for term in ("cheapest", "lowest", "least expensive")):
+            arguments["sort_by"] = "price-ascending"
+        return arguments
     if tool_name == "browse_store":
         return ({"mode": "collection_products", "collection_reference": query, "limit": 8}
                 if intent.product_query else {"mode": "list_collections", "limit": 8})

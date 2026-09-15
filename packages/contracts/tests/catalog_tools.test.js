@@ -1,6 +1,29 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AjaxCatalogAdapter, StorefrontCatalog, WebMcpCatalogAdapter } from '../../../apps/shopify/extensions/drake/assets/drake-catalog.js';
+import { AjaxCatalogAdapter, NativeSearchAdapter, StorefrontCatalog, WebMcpCatalogAdapter } from '../../../apps/shopify/extensions/drake/assets/drake-catalog.js';
+
+
+test('native search URL is constrained and rendered grid order is authoritative (NS-01, NS-02, NS-14)', async () => {
+  const links = [
+    { href: 'https://shop.test/products/second', closest: () => null },
+    { href: 'https://shop.test/products/first', closest: () => null },
+    { href: 'https://shop.test/products/second?duplicate=1', closest: () => null },
+  ];
+  const grid = { querySelectorAll: () => links };
+  const documentRef = { querySelector: (selector) => selector === '#product-grid' ? grid : null };
+  const fetchImpl = async (url) => ({ ok: true, json: async () => ({
+    id: url.includes('/second') ? 2 : 1, title: url.includes('/second') ? 'Second rendered' : 'First rendered',
+    handle: url.includes('/second') ? 'second' : 'first', options: ['Title'],
+    variants: [{ id: url.includes('/second') ? 20 : 10, title: 'Default Title', options: ['Default Title'], price: 10000, available: true }],
+  }) });
+  const locationRef = { origin: 'https://shop.test', href: 'https://shop.test/en/search?q=boards&type=product&sort_by=price-ascending' };
+  const adapter = new NativeSearchAdapter({ searchUrl: '/en/search', fetchImpl, documentRef, locationRef, currency: 'USD' });
+  assert.equal(adapter.buildUrl({ query: 'boards', sort_by: 'price-ascending' }), '/en/search?q=boards&type=product&sort_by=price-ascending');
+  const observed = await adapter.observe({ query: 'boards', sort_by: 'price-ascending' });
+  assert.deepEqual(observed.products.map((item) => item.product_id), ['2', '1']);
+  assert.equal(observed.native_search.rendered_count, 2);
+  assert.throws(() => new NativeSearchAdapter({ searchUrl: 'https://evil.test/search', fetchImpl, documentRef, locationRef }).buildUrl({ query: 'x' }), /cross_origin/);
+});
 
 
 test('Ajax browse lists collections and normalizes collection products', async () => {

@@ -290,6 +290,7 @@ class ShoppingController:
         context_phase: str = "action",
         now_ms: int | None = None,
         cart_details: list[dict[str, Any]] | None = None,
+        displayed_search: dict[str, Any] | None = None,
     ) -> ControllerTurnResult:
         """Handle an accepted final transcript through LLM reasoning, resolution, and execution."""
         now = now_ms if now_ms is not None else int(time.time() * 1000)
@@ -317,6 +318,31 @@ class ShoppingController:
         if page_context and page_context != sess.current_page:
             sess.previous_page = sess.current_page
             sess.current_page = dict(page_context)
+        if displayed_search is not None:
+            ordered_ids = tuple(evidence.products)
+            if displayed_search.get("rendered_count") != len(ordered_ids):
+                return ControllerTurnResult(
+                    session_id, turn_id, request_revision, page_epoch, "error",
+                    "I could not validate the displayed store results.",
+                    failure_code="displayed_search_mismatch",
+                )
+            signature = f"{displayed_search.get('actual_url')}|{'|'.join(ordered_ids)}"
+            active = sess.result_sets.get(sess.active_result_set_id or "", {})
+            if active.get("display_signature") != signature:
+                result_set_id = f"rs_{uuid.uuid4().hex}"
+                sess.result_sets[result_set_id] = {
+                    "result_set_id": result_set_id, "query": displayed_search.get("query"),
+                    "product_ids": list(ordered_ids), "observed_at_ms": evidence.observed_at_ms,
+                    "shop_id": evidence.shop_id, "currency": evidence.currency,
+                    "entries": [{"position": index + 1, "product_id": product_id}
+                                for index, product_id in enumerate(ordered_ids)],
+                    "rank_reason": displayed_search.get("sort_by", "relevance"),
+                    "coverage": "rendered_page", "display_signature": signature,
+                    "native_search": dict(displayed_search),
+                }
+                sess.active_result_set_id = result_set_id
+                sess.active_search_product_ids = ordered_ids
+                sess.active_search_query = str(displayed_search.get("query") or "") or None
         pending_key = (turn_id, request_revision)
         for key in tuple(sess.pending_intents):
             if key != pending_key and key[1] < request_revision:
@@ -508,6 +534,31 @@ class ShoppingController:
             )
 
         lower_transcript = transcript.casefold()
+
+        pending_price_choice = sess.pending_clarification_intent
+        if (pending_price_choice and pending_price_choice.budget_constraint
+                and pending_price_choice.budget_constraint.comparison == "approximate"):
+            answer = lower_transcript.strip(" .?!")
+            if answer in {"maximum", "maximum budget", "use it as a maximum", "under", "under that"}:
+                old_budget = pending_price_choice.budget_constraint
+                intent = replace(
+                    pending_price_choice, intent_id=intent.intent_id,
+                    supporting_transcript_span=transcript.strip(),
+                    budget_constraint=replace(old_budget, comparison="max", min_amount=None),
+                )
+                sess.pending_clarification_intent = None
+
+        if (intent.operation in {IntentOperation.SEARCH, IntentOperation.BROWSE}
+                and intent.budget_constraint
+                and intent.budget_constraint.comparison == "approximate"):
+            sess.pending_intents.pop(pending_key, None)
+            sess.pending_clarification_intent = intent
+            return ControllerTurnResult(
+                session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                "Native store search cannot rank by closest price. Should I use that amount as a maximum budget, or would you like to give me a price range?",
+                intent, clarification_fields=("budget_constraint",),
+                reason="Native search does not support nearest-price ranking",
+            )
 
         pending_cart_choices = sess.continuation_state.pop("cart_detail_choices", None)
         cart_choice = re.fullmatch(r"(?:the )?(first|second|third|[1-9][0-9]*)(?: one| item)?[.!]?", lower_transcript.strip())
@@ -1118,7 +1169,8 @@ class ShoppingController:
                     selected_tool=selection.tool_name,
                 )
             result = self._handle_search_and_browse(
-                session_id, turn_id, request_revision, page_epoch, intent, evidence
+                session_id, turn_id, request_revision, page_epoch, intent, evidence,
+                native_search=(tool_observation or {}).get("data", {}).get("native_search"),
             )
             if result.status == "completed" and result.result_product_ids:
                 sess.active_search_query = (intent.product_query or sess.active_search_query or "").strip() or None
@@ -1145,6 +1197,12 @@ class ShoppingController:
                                     else "cheapest" if any(word in lower_transcript for word in ("cheapest", "lowest", "least expensive"))
                                     else "store_order"),
                     "coverage": (tool_observation or {}).get("data", {}).get("coverage", "bounded_snapshot"),
+                    "native_search": (tool_observation or {}).get("data", {}).get("native_search"),
+                    "display_signature": (
+                        f"{(tool_observation or {}).get('data', {}).get('native_search', {}).get('actual_url')}|"
+                        f"{'|'.join(result.result_product_ids)}"
+                        if (tool_observation or {}).get("data", {}).get("native_search") else None
+                    ),
                 }
                 if len(sess.result_sets) > 8:
                     oldest = next(iter(sess.result_sets))
@@ -1336,6 +1394,7 @@ class ShoppingController:
         page_epoch: int,
         intent: ShoppingIntent,
         evidence: EvidenceSnapshot,
+        native_search: dict[str, Any] | None = None,
     ) -> ControllerTurnResult:
         query = (intent.product_query or "").strip().lower()
         ranking_text = f"{intent.supporting_transcript_span} {query}".casefold()
@@ -1427,17 +1486,10 @@ class ShoppingController:
             if not prices:
                 raise ValueError("Product has no eligible verified price")
             return min(prices)
-        if intent.budget_constraint and intent.budget_constraint.comparison in ("approximate", "exact"):
-            target = Money.from_string(intent.budget_constraint.max_amount or "0", intent.budget_constraint.currency)
-            matching.sort(key=lambda p: abs(display_price(p).amount - target.amount))
-        elif wants_cheapest:
-            matching.sort(key=lambda p: display_price(p).amount)
+        # Native storefront observation order owns positional references. The
+        # browser applies any supported price sort before producing evidence.
         names = [f"{i+1}. {p.title} (from {display_price(p)})" for i, p in enumerate(matching[:3])]
-        if intent.budget_constraint and intent.budget_constraint.comparison == "approximate":
-            target = Money.from_string(intent.budget_constraint.max_amount or "0", intent.budget_constraint.currency)
-            others = f" Other nearby matches: {', '.join(names[1:])}." if len(names) > 1 else ""
-            resp = f"Closest to {target} among {len(matching)} matching items is {names[0]}.{others}"
-        elif wants_cheapest:
+        if wants_cheapest and (native_search or {}).get("sort_by") == "price-ascending":
             others = f" Other matches in price order: {', '.join(names[1:])}." if len(names) > 1 else ""
             resp = f"Cheapest among {len(matching)} matching items is {names[0]}.{others}"
         else:

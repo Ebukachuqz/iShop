@@ -44,10 +44,11 @@ class ToolProposal:
 
 
 TOOL_DESCRIPTORS: tuple[ToolDescriptor, ...] = (
-    ToolDescriptor("search_catalog", "Search products and supported store content without navigating.", _object_schema({
+    ToolDescriptor("search_catalog", "Show matching products in the native storefront search page, then observe its displayed order.", _object_schema({
         "query": STRING, "resource_types": {"type": "array", "items": {"enum": ["product", "collection", "article", "page"]}, "maxItems": 4},
-        "limit": LIMIT, "cursor": STRING,
-    })),
+        "limit": LIMIT, "cursor": STRING, "sort_by": {"enum": ["relevance", "price-ascending", "price-descending"]},
+        "min_price": STRING, "max_price": STRING,
+    }), navigation=True),
     ToolDescriptor("browse_store", "List collections or browse products in one grounded collection.", _object_schema({
         "mode": {"enum": ["list_collections", "collection_products"]}, "collection_reference": STRING,
         "limit": LIMIT, "cursor": STRING, "navigate": {"type": "boolean"},

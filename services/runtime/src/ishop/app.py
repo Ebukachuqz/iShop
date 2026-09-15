@@ -91,6 +91,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
                 tool_observation=payload.get("tool_observation"),
                 context_phase=payload.get("context_phase", "action"),
                 cart_details=(cart_raw or {}).get("display_lines", []),
+                displayed_search=payload.get("displayed_search"),
             )
             controller.record_assistant_outcome(session_id, result)
             session_store.save(session_id, controller.export_session_state(session_id))

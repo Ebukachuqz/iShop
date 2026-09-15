@@ -256,21 +256,25 @@ def test_t06_budget_constraint_filtering(store_evidence, empty_cart):
     assert "Cotton T-Shirt" not in res.spoken_response
 
 
-def test_approximate_price_ranks_without_inventing_a_hard_cap(store_evidence):
-    controller = ShoppingController(FakeLlmProvider())
+def test_approximate_price_requests_native_search_compatible_constraint(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
     intent = ShoppingIntent(
         intent_id="int_approx", operation=IntentOperation.SEARCH,
         product_query=None, is_explicit_checkout_request=False,
         supporting_transcript_span="Which is closest to 4000?",
         budget_constraint=BudgetConstraint("4000", "NGN", comparison="approximate"),
     )
-    result = controller._handle_search_and_browse("s", "t", 1, 1, intent, store_evidence)
-    assert result.result_product_ids == ("prod_cap", "prod_tee")
-    assert "3500.00 NGN" in result.spoken_response
-    assert "5000.00 NGN" in result.spoken_response
+    provider.register_custom_intent("Which is closest to 4000?", intent)
+    result = asyncio.run(ShoppingController(provider).handle_turn(
+        "s", "t", 1, 1, "Which is closest to 4000?", store_evidence, empty_cart,
+        available_tools={"search_catalog"},
+    ))
+    assert result.status == "clarification_needed"
+    assert "maximum budget" in result.spoken_response
+    assert result.authorized_command is None
 
 
-def test_cheapest_is_a_ranking_preference_not_a_product_name(store_evidence):
+def test_cheapest_does_not_reorder_unverified_store_evidence(store_evidence):
     controller = ShoppingController(FakeLlmProvider())
     intent = ShoppingIntent(
         intent_id="int_cheapest", operation=IntentOperation.BROWSE,
@@ -278,8 +282,8 @@ def test_cheapest_is_a_ranking_preference_not_a_product_name(store_evidence):
         supporting_transcript_span="Which one is the cheapest?",
     )
     result = controller._handle_search_and_browse("s", "t", 1, 1, intent, store_evidence)
-    assert result.result_product_ids == ("prod_cap", "prod_tee")
-    assert result.spoken_response.index("Embroidered Cap") < result.spoken_response.index("Cotton T-Shirt")
+    assert result.result_product_ids == ("prod_tee", "prod_cap")
+    assert result.spoken_response.index("Cotton T-Shirt") < result.spoken_response.index("Embroidered Cap")
 
 
 def test_current_product_id_resolves_implicit_product_page_add(store_evidence, empty_cart):
