@@ -403,6 +403,47 @@ def test_shopping_turn_handler_is_tenant_bound_and_command_result_is_bound():
         }
 
 
+def test_verified_command_result_returns_customer_response():
+    async def handler(payload, grant):
+        return {
+            "status": "completed", "spoken_response": "",
+            "authorized_command": {
+                "command_id": "cmd_receipt_123456789", "shop_id": SHOP,
+                "operation": "add_variant",
+                "expected_cart_fingerprint": CartSnapshot(SHOP, "NGN").fingerprint(),
+                "parameters": {"variant_id": "variant_1", "quantity": 1, "properties": {}, "selling_plan_id": None},
+            },
+        }
+
+    async def final_handler(command, result, verified, grant):
+        assert verified is True
+        assert grant.shop_id == SHOP
+        return {"status": "completed", "spoken_response": "Great, I added one shirt to your cart."}
+
+    app = create_voice_app(
+        signing_secret=SECRET, allowed_origins={ORIGIN},
+        session_factory=lambda **kwargs: FakeRealtimeSession(**kwargs),
+        shopping_turn_handler=handler,
+        shopping_command_result_handler=final_handler,
+    )
+    with TestClient(app).websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as socket:
+        socket.send_json({"type": "authenticate", "grant": signed_grant()})
+        assert socket.receive_json()["type"] == "authenticated"
+        socket.send_json(shopping_turn_payload())
+        socket.receive_json()
+        socket.send_json({
+            "type": "command_result", "command_id": "cmd_receipt_123456789",
+            "result": {
+                "outcome": "verified_success",
+                "before_cart": {"shop_id": SHOP, "currency": "NGN", "lines": []},
+                "after_cart": {"shop_id": SHOP, "currency": "NGN", "lines": [{"variant_id": "variant_1", "quantity": 1}]},
+            },
+        })
+        ack = socket.receive_json()
+        assert ack["verified"] is True
+        assert ack["spoken_response"] == "Great, I added one shirt to your cart."
+
+
 def test_command_result_label_cannot_override_wrong_cart_state():
     before = CartSnapshot(SHOP, "NGN")
     command = {

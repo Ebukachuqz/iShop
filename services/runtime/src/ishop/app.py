@@ -11,10 +11,12 @@ from fastapi import FastAPI
 from ishop.config import RuntimeSettings, load_local_environment
 from ishop.commerce.catalog import EvidenceSnapshot, ProductEvidence, VariantEvidence
 from ishop.domain.models import CartSnapshot, Money
+from ishop.domain.intent import IntentOperation, ShoppingIntent
 from ishop.domain.session_store import SessionStore
 from ishop.domain.journal import CommandJournal
 from ishop.llm.groq import GroqLlmProvider
-from ishop.orchestration.controller import ShoppingController
+from ishop.llm.base import GroundedResponseContext
+from ishop.orchestration.controller import ControllerTurnResult, ShoppingController
 from ishop.speech import (
     AssemblyAiStreamingSession,
     ElevenLabsScribeRealtimeSession,
@@ -157,6 +159,51 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             if tts_session is not None:
                 await tts_session.cancel()
 
+    async def handle_command_result(
+        command: dict[str, Any],
+        result: dict[str, Any],
+        verified: bool,
+        grant: Any,
+    ) -> dict[str, Any]:
+        fallback, facts, intent_operation = _verified_command_response(command, result, verified)
+        if not verified:
+            return {"status": "error", "spoken_response": fallback}
+        intent = ShoppingIntent(
+            intent_id=f"receipt_{command.get('command_id', 'unknown')}",
+            operation=intent_operation,
+            supporting_transcript_span="verified storefront command result",
+        )
+        try:
+            response = await llm_provider.generate_grounded_response(GroundedResponseContext(
+                operation=intent_operation.value,
+                requested_intent=intent,
+                evidence_summary=facts,
+                execution_receipt_summary=facts,
+                cart_summary=facts,
+            ))
+            response = " ".join(str(response).split()).strip()
+            if not response or len(response) > 500:
+                response = fallback
+        except Exception:
+            logger.warning("Grounded command response unavailable; using factual fallback")
+            response = fallback
+
+        session_id = grant.anonymous_session_id
+        controller = controllers.get(session_id)
+        if controller is not None:
+            async with session_locks.setdefault(session_id, asyncio.Lock()):
+                controller.record_assistant_outcome(session_id, ControllerTurnResult(
+                    session_id=session_id,
+                    turn_id=str(command.get("turn_id", "")),
+                    request_revision=int(command.get("request_revision", 0)),
+                    page_epoch=int(command.get("page_epoch", 0)),
+                    status="completed",
+                    spoken_response=response,
+                    extracted_intent=intent,
+                ))
+                session_store.save(session_id, controller.export_session_state(session_id))
+        return {"status": "completed", "spoken_response": response}
+
     app = create_voice_app(
         signing_secret=active.signing_secret,
         allowed_origins=set(active.allowed_origins),
@@ -174,6 +221,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         shopping_turn_handler=handle_shopping_turn,
         command_journal=command_journal,
         shopping_tts_handler=synthesize_shopping_text,
+        shopping_command_result_handler=handle_command_result,
     )
 
     @app.get("/health")
@@ -202,8 +250,72 @@ def main() -> None:
     )
 
 
-if __name__ == "__main__":
-    main()
+def _verified_command_response(
+    command: dict[str, Any], result: dict[str, Any], verified: bool
+) -> tuple[str, str, IntentOperation]:
+    """Build the only facts an LLM may use for a cart-result response."""
+    operation = str(command.get("operation", ""))
+    operation_map = {
+        "add_variant": IntentOperation.ADD_TO_CART,
+        "set_line_quantity": IntentOperation.UPDATE_QUANTITY,
+        "remove_line": IntentOperation.REMOVE_FROM_CART,
+        "clear_cart": IntentOperation.CANCEL_CART,
+    }
+    intent_operation = operation_map.get(operation, IntentOperation.VIEW_CART)
+    if not verified:
+        return (
+            "I could not verify that cart update. Please check your cart before trying again.",
+            "The storefront cart result was not independently verified.",
+            intent_operation,
+        )
+
+    before = result.get("before_cart") if isinstance(result.get("before_cart"), dict) else {}
+    after = result.get("after_cart") if isinstance(result.get("after_cart"), dict) else {}
+    params = command.get("parameters") if isinstance(command.get("parameters"), dict) else {}
+    before_lines = before.get("lines") if isinstance(before.get("lines"), list) else []
+    after_lines = after.get("lines") if isinstance(after.get("lines"), list) else []
+    display_lines = []
+    for cart in (after, before):
+        values = cart.get("display_lines") if isinstance(cart, dict) else None
+        if isinstance(values, list):
+            display_lines.extend(item for item in values if isinstance(item, dict))
+
+    variant_id = str(params.get("variant_id", ""))
+    target_key = str(params.get("target_line_key", ""))
+
+    def matches(line: dict[str, Any]) -> bool:
+        return bool(
+            (target_key and str(line.get("line_key", line.get("shopify_line_key", ""))) == target_key)
+            or (variant_id and str(line.get("variant_id", "")) == variant_id)
+        )
+
+    display = next((line for line in display_lines if matches(line)), {})
+    title = str(display.get("title") or "this item").strip()
+    variant_title = str(display.get("variant_title") or "").strip()
+    if variant_title and variant_title.casefold() not in {"default title", "title"}:
+        title = f"{title}, {variant_title}"
+    before_quantity = sum(int(line.get("quantity", 0)) for line in before_lines if isinstance(line, dict) and matches(line))
+    after_quantity = sum(int(line.get("quantity", 0)) for line in after_lines if isinstance(line, dict) and matches(line))
+    cart_total = sum(int(line.get("quantity", 0)) for line in after_lines if isinstance(line, dict))
+
+    if operation == "add_variant":
+        changed = max(0, after_quantity - before_quantity)
+        fallback = f"Great, I added {changed} {title} to your cart. You now have {after_quantity} of it in your cart."
+        facts = f"Verified add: added quantity {changed} of {title}; product quantity after update {after_quantity}; total cart quantity {cart_total}."
+    elif operation in {"set_line_quantity", "remove_line"}:
+        removed = max(0, before_quantity - after_quantity)
+        if after_quantity == 0:
+            fallback = f"Done, I removed {title} from your cart."
+        else:
+            fallback = f"Done, I removed {removed} {title}. You now have {after_quantity} in your cart."
+        facts = f"Verified quantity update: removed quantity {removed} of {title}; product quantity after update {after_quantity}; total cart quantity {cart_total}."
+    elif operation == "clear_cart":
+        fallback = "Done, I cleared your cart. It is now empty."
+        facts = "Verified whole-cart clear: total cart quantity after update 0."
+    else:
+        fallback = "The requested store action was completed and verified."
+        facts = "The requested storefront action completed with an independently verified result."
+    return fallback, facts, intent_operation
 
 
 def _evidence_from_browser(data: dict[str, Any]) -> EvidenceSnapshot:
@@ -241,3 +353,7 @@ def _evidence_from_browser(data: dict[str, Any]) -> EvidenceSnapshot:
         products=products,
         query=str(data["query"]) if data.get("query") else None,
     )
+
+
+if __name__ == "__main__":
+    main()

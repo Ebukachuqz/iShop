@@ -48,6 +48,31 @@ test('native search tolerates nested theme wrappers and chooses the product grid
   assert.deepEqual(observed.products.map((item) => item.title), ['The Complete Snowboard', 'The Minimal Snowboard']);
 });
 
+test('native search preserves rendered identity when one product enrichment fails', async () => {
+  const cards = [
+    { querySelector: () => ({ textContent: 'The Complete Snowboard' }) },
+    { querySelector: () => ({ textContent: 'The Minimal Snowboard' }) },
+  ];
+  const links = [
+    { href: 'https://shop.test/products/complete', textContent: '', closest: (selector) => selector.startsWith('[hidden]') ? null : cards[0] },
+    { href: 'https://shop.test/products/minimal', textContent: '', closest: (selector) => selector.startsWith('[hidden]') ? null : cards[1] },
+  ];
+  const grid = { querySelectorAll: () => links };
+  const documentRef = { querySelector: (selector) => selector === '#product-grid' ? grid : null };
+  const fetchImpl = async (url) => url.includes('complete')
+    ? { ok: false, status: 503 }
+    : { ok: true, json: async () => ({ id: 2, title: 'The Minimal Snowboard', handle: 'minimal', variants: [] }) };
+  const adapter = new NativeSearchAdapter({
+    searchUrl: '/search', fetchImpl, documentRef,
+    locationRef: { origin: 'https://shop.test', href: 'https://shop.test/search?q=snowboard&type=product' },
+    currency: 'USD',
+  });
+  const observed = await adapter.observe({ query: 'snowboard' });
+  assert.deepEqual(observed.products.map((item) => item.title), ['The Complete Snowboard', 'The Minimal Snowboard']);
+  assert.equal(observed.products[0].url, '/products/complete');
+  assert.equal(observed.native_search.enrichment_failures, 1);
+});
+
 
 test('Ajax browse lists collections and normalizes collection products', async () => {
   const calls = [];

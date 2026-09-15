@@ -244,6 +244,7 @@ export class NativeSearchAdapter {
     });
     const links = [...roots[0].querySelectorAll('a[href*="/products/"]')];
     const ordered = [];
+    let enrichmentFailures = 0;
     const seen = new Set();
     for (const link of links) {
       if (ordered.length >= Math.min(50, Math.max(1, Number(limit || 20)))) break;
@@ -254,9 +255,18 @@ export class NativeSearchAdapter {
       if (!handle || seen.has(handle)) continue;
       seen.add(handle);
       const productPath = `${url.pathname.replace(/\/$/, '')}.js`;
-      const response = await this.fetch(productPath, { headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new Error(`native_search_product_failed_${response.status}`);
-      const product = await response.json();
+      let product = null;
+      try {
+        const response = await this.fetch(productPath, { headers: { Accept: 'application/json' } });
+        if (!response.ok) throw new Error(`native_search_product_failed_${response.status}`);
+        product = await response.json();
+      } catch (_) {
+        enrichmentFailures += 1;
+        const card = link.closest('li, article, [class*="card"], [class*="product"]') || link;
+        const titleNode = card.querySelector?.('h2, h3, [class*="title"]');
+        const title = String(titleNode?.textContent || link.textContent || handle).replace(/\s+/g, ' ').trim();
+        product = { id: `handle:${handle}`, handle, title, variants: [] };
+      }
       product.url ||= `${url.pathname}${url.search}`;
       ordered.push(product);
     }
@@ -287,6 +297,7 @@ export class NativeSearchAdapter {
         query: actual.searchParams.get('q') || '', sort_by: actual.searchParams.get('sort_by') || 'relevance',
         min_price: actual.searchParams.get('filter.v.price.gte'), max_price: actual.searchParams.get('filter.v.price.lte'),
         page: Number(actual.searchParams.get('page') || 1), rendered_count: ordered.length,
+        enrichment_failures: enrichmentFailures,
       },
     };
   }

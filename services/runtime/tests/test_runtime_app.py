@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from ishop.app import create_runtime_app
+from ishop.app import _verified_command_response, create_runtime_app
 from ishop.config import RuntimeSettings
 
 
@@ -27,6 +27,29 @@ def test_health_reports_safe_runtime_configuration() -> None:
         "speech_profile": "sahara-stream-pcm",
         "audio_recording": False,
     }
+
+
+def test_verified_add_receipt_names_quantity_and_hides_default_variant() -> None:
+    command = {
+        "operation": "add_variant",
+        "parameters": {"variant_id": "variant_1", "quantity": 1},
+    }
+    result = {
+        "before_cart": {"lines": [{"variant_id": "variant_1", "quantity": 4}]},
+        "after_cart": {
+            "lines": [{"variant_id": "variant_1", "quantity": 5}],
+            "display_lines": [{
+                "variant_id": "variant_1", "title": "The Collection Snowboard: Hydrogen",
+                "variant_title": "Default Title", "quantity": 5,
+            }],
+        },
+    }
+    fallback, facts, operation = _verified_command_response(command, result, True)
+    assert operation.value == "add_to_cart"
+    assert "added 1 The Collection Snowboard: Hydrogen" in fallback
+    assert "now have 5" in fallback
+    assert "Default Title" not in fallback
+    assert "total cart quantity 5" in facts
 
 
 def test_runtime_settings_require_secret_origin_and_sahara_key(

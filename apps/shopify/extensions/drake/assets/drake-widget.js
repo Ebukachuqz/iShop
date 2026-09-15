@@ -479,10 +479,12 @@
             Number(event.request_revision) < Number(receipt.request_revision)) return;
         this.pendingReceipts.delete(event.command_id);
         if (event.verified) {
+          if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
           this.setState("completed", { verifiedReceipt: receipt.result });
         } else {
+          if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
           const detail = shopperError(receipt.result?.errors?.[0]);
-          this.setState("failed", { error: detail });
+          this.setState("failed", { error: detail, suppressError: Boolean(event.spoken_response) });
         }
         this.pendingTurn = null;
       } else if (event.type === "closed") {

@@ -281,6 +281,28 @@ def test_named_navigation_requests_background_product_lookup_then_resumes(four_i
     assert opened.authorized_command.parameters["url"] == "/products/the-complete-snowboard"
 
 
+def test_explicit_named_navigation_overrides_empty_search_misclassification(four_item_evidence, empty_cart):
+    """Visible product identity wins when the model mistakes 'open X' for an empty search."""
+    provider = FakeLlmProvider()
+    transcript = "Open Alpine Pro Snowboard"
+    provider.register_custom_intent(transcript, ShoppingIntent(
+        intent_id="intent_bad_empty_search",
+        operation=IntentOperation.SEARCH,
+        product_query=None,
+        is_explicit_checkout_request=False,
+        supporting_transcript_span=transcript,
+        unresolved_fields=("product_query",),
+    ))
+    result = asyncio.run(ShoppingController(provider).handle_turn(
+        "sess_named_override", "turn_named_override", 1, 1,
+        transcript, four_item_evidence, empty_cart,
+    ))
+    assert result.authorized_command is not None
+    assert result.authorized_command.operation == CommandOperation.NAVIGATE_STOREFRONT
+    assert result.authorized_command.parameters["url"] == "/products/alpine-pro-snowboard"
+    assert "What kind" not in result.spoken_response
+
+
 def test_cs04_ordinal_bounds(four_item_evidence, empty_cart):
     """CS-04: Out-of-bounds ordinals trigger clarification instead of guessing."""
     controller = ShoppingController(llm_provider=FakeLlmProvider())

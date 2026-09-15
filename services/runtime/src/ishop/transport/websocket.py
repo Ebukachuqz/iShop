@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 SessionFactory = Callable[..., RealtimeSpeechSession]
 ShoppingTurnHandler = Callable[[dict[str, Any], SessionGrant], Any]
 ShoppingTtsHandler = Callable[[str, int], Any]
+ShoppingCommandResultHandler = Callable[[dict[str, Any], dict[str, Any], bool, SessionGrant], Any]
 
 
 class RevocationRequest(BaseModel):
@@ -106,6 +107,7 @@ def create_voice_app(
     clock_ms: Callable[[], int] | None = None,
     command_journal: CommandJournal | None = None,
     shopping_tts_handler: ShoppingTtsHandler | None = None,
+    shopping_command_result_handler: ShoppingCommandResultHandler | None = None,
 ) -> FastAPI:
     """Create the minimal authenticated voice transport used by WP-02."""
     if len(signing_secret) < 32:
@@ -455,12 +457,35 @@ def create_voice_app(
                             "Browser cart result verified" if verified else "Browser cart result could not be verified",
                         )
                     pending_commands.pop(str(command_id), None)
-                    await websocket.send_json({
+                    acknowledgement = {
                         "type": "command_result_ack",
                         "command_id": command_id,
                         "verified": verified,
                         "request_revision": pending["request_revision"],
-                    })
+                    }
+                    if shopping_command_result_handler is not None:
+                        try:
+                            final_result = await shopping_command_result_handler(
+                                pending["command"], result, verified, grant
+                            )
+                            if isinstance(final_result, dict):
+                                acknowledgement.update(final_result)
+                        except Exception:
+                            logger.exception("Verified command response generation failed")
+                            acknowledgement["spoken_response"] = (
+                                "Your cart update was verified."
+                                if verified else "I could not verify that cart update."
+                            )
+                    await websocket.send_json(acknowledgement)
+                    if shopping_tts_handler is not None and acknowledgement.get("spoken_response"):
+                        tts_payload = {
+                            "turn_id": pending.get("turn_id") or pending["command"].get("turn_id"),
+                            "request_revision": pending["request_revision"],
+                            "page_epoch": pending["command"].get("page_epoch", 0),
+                        }
+                        task = asyncio.create_task(deliver_tts(acknowledgement, tts_payload))
+                        tts_tasks.add(task)
+                        task.add_done_callback(tts_tasks.discard)
                 else:
                     await _send_error(websocket, "unknown_message_type")
         except (WebSocketDisconnect, ValueError, TypeError):
@@ -589,7 +614,7 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
             raise ValueError("Tool observation is too large")
     displayed = payload.get("displayed_search")
     if displayed is not None:
-        allowed_displayed = {"schema_version", "adapter", "actual_url", "query", "sort_by", "min_price", "max_price", "page", "rendered_count"}
+        allowed_displayed = {"schema_version", "adapter", "actual_url", "query", "sort_by", "min_price", "max_price", "page", "rendered_count", "enrichment_failures"}
         if (not isinstance(displayed, dict) or set(displayed) - allowed_displayed
                 or displayed.get("schema_version") != "1.0.0"
                 or displayed.get("adapter") != "shopify-theme-product-grid-v1"
@@ -600,7 +625,10 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
                 or not displayed["actual_url"].split("?", 1)[0].rstrip("/").endswith("/search")
                 or displayed.get("sort_by") not in {"relevance", "price-ascending", "price-descending"}
                 or not isinstance(displayed.get("rendered_count"), int)
-                or displayed["rendered_count"] < 0 or displayed["rendered_count"] > 50):
+                or displayed["rendered_count"] < 0 or displayed["rendered_count"] > 50
+                or not isinstance(displayed.get("enrichment_failures", 0), int)
+                or displayed.get("enrichment_failures", 0) < 0
+                or displayed.get("enrichment_failures", 0) > displayed["rendered_count"]):
             raise ValueError("Invalid displayed search observation")
 
 

@@ -58,6 +58,7 @@ from ishop.domain.models import (
     Money,
 )
 from ishop.llm.base import (
+    GroundedResponseContext,
     LlmIntentRequest,
     LlmInterpretationResult,
     LlmProvider,
@@ -534,6 +535,38 @@ class ShoppingController:
             )
 
         lower_transcript = transcript.casefold()
+
+        # An explicit request to open a uniquely named product on the current
+        # page outranks an erroneous empty search classification. Product
+        # identity still comes only from validated browser evidence.
+        explicit_named_navigation = bool(re.search(
+            r"\b(?:open|view)\b|\btake\s+me\s+to\b|\bgo\s+to\b|\bshow\s+me\s+the\s+page\b|\bpage\s+of\b",
+            lower_transcript,
+        ))
+        if (
+            intent.operation in {IntentOperation.SEARCH, IntentOperation.BROWSE}
+            and explicit_named_navigation
+            and evidence.products
+        ):
+            named_matches = [
+                product for product in evidence.products.values()
+                if product_title_matches(product.title, transcript)
+            ]
+            if len(named_matches) == 1:
+                matched_product = named_matches[0]
+                intent = replace(
+                    intent,
+                    operation=IntentOperation.NAVIGATE,
+                    product_query=matched_product.product_id,
+                    target_reference=TargetReference(
+                        kind=ReferenceKind.OBSERVED_PRODUCT,
+                        value=matched_product.product_id,
+                    ),
+                    unresolved_fields=tuple(
+                        field for field in intent.unresolved_fields
+                        if field not in {"product_query", "product_selection"}
+                    ),
+                )
 
         pending_price_choice = sess.pending_clarification_intent
         if (pending_price_choice and pending_price_choice.budget_constraint
@@ -1221,9 +1254,27 @@ class ShoppingController:
             ), selected_tool=selection.tool_name)
 
         elif intent.operation == IntentOperation.VIEW_CART:
-            return replace(self._handle_view_cart(
+            result = replace(self._handle_view_cart(
                 session_id, turn_id, request_revision, page_epoch, intent, current_cart, details
             ), selected_tool=selection.tool_name)
+            # Cart observations are already trusted facts. Let the configured LLM
+            # phrase them conversationally while retaining the deterministic text
+            # as the safe fallback and as the only source of factual claims.
+            try:
+                phrased = await self.llm_provider.generate_grounded_response(
+                    GroundedResponseContext(
+                        operation=IntentOperation.VIEW_CART.value,
+                        requested_intent=intent,
+                        evidence_summary=result.spoken_response,
+                        cart_summary=result.spoken_response,
+                    )
+                )
+                phrased = " ".join(str(phrased).split()).strip()
+                if phrased and len(phrased) <= 750:
+                    result = replace(result, spoken_response=phrased)
+            except Exception:
+                logger.warning("Grounded cart response unavailable; using factual fallback")
+            return result
 
         elif intent.operation in (
             IntentOperation.ADD_TO_CART,
@@ -2015,16 +2066,15 @@ class ShoppingController:
             )
 
         if not self.reconciler or not client:
-            # In unit-test / offline mode without client: return authorized command directly
-            item_name = f"{variant.product_title} - {variant.variant_title}" if variant else f"item {action.line_key or action.variant_id}"
-            spoken = f"Prepared verified action for {item_name}."
+            # The browser still has to execute and independently verify this
+            # command. Success wording is produced only from its read-back.
             return ControllerTurnResult(
                 session_id=session_id,
                 turn_id=turn_id,
                 request_revision=request_revision,
                 page_epoch=page_epoch,
                 status="completed",
-                spoken_response=spoken,
+                spoken_response="",
                 extracted_intent=intent,
                 authorized_command=cmd,
             )
