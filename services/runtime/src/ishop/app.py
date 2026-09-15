@@ -192,6 +192,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         intent = ShoppingIntent(
             intent_id=f"receipt_{command.get('command_id', 'unknown')}",
             operation=intent_operation,
+            is_explicit_checkout_request=(intent_operation == IntentOperation.REQUEST_CHECKOUT),
             supporting_transcript_span="verified storefront command result",
         )
         llm_provider = selected_llm_provider(grant)

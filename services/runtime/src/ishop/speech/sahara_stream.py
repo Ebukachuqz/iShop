@@ -35,7 +35,15 @@ async def _default_connect(url: str, headers: dict[str, str]):
             "sahara",
             False,
         ) from exc
-    return await connect(url, additional_headers=headers, user_agent_header="iShop-Drake/0.1")
+    # Intron's edge has occasionally returned frames with RSV compression bits
+    # set without a valid negotiated extension. Disable per-message compression
+    # for this PCM/JSON stream to avoid intermittent protocol disconnects.
+    return await connect(
+        url,
+        additional_headers=headers,
+        user_agent_header="iShop-Drake/0.1",
+        compression=None,
+    )
 
 
 class SaharaStreamingSession(RealtimeSpeechSession):

@@ -1077,7 +1077,26 @@ class ShoppingController:
             turn_id=turn_id,
             request_revision=request_revision,
         )
+        deterministic_tools = [
+            tool for tool in qualified if tool.name in expected_tools[intent.operation]
+        ]
+        if len(deterministic_tools) == 1:
+            # Once intent and availability have reduced the choice to one tool,
+            # another model round trip cannot add authority or information. It
+            # only adds latency and another provider failure point.
+            tool = deterministic_tools[0]
+            arguments = tool_arguments_for_intent(intent, tool.name)
+            selection = LlmToolSelectionResult(
+                tool.name, arguments, "Only qualified tool for validated intent", ""
+            )
+            proposal = self.tool_registry.hydrate_and_validate(
+                ToolProposal(tool.name, arguments, selection.rationale),
+                arguments,
+                available=qualified_names,
+            )
         for _attempt in range(2):
+            if selection is not None and proposal is not None:
+                break
             try:
                 saved_selection = sess.continuation_state.get("selected_tool")
                 if (tool_observation is not None and saved_selection

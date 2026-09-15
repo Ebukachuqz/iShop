@@ -129,6 +129,23 @@ def test_cached_browser_search_does_not_claim_fresh_constraint_coverage():
     assert result.selected_tool == "search_catalog"
 
 
+def test_single_qualified_tool_does_not_require_second_llm_call():
+    class IntentOnlyProvider(FakeLlmProvider):
+        async def select_tool(self, request):
+            raise AssertionError("A single qualified tool must be selected deterministically")
+
+    provider = IntentOnlyProvider()
+    controller = ShoppingController(provider)
+    evidence = EvidenceSnapshot("empty", "shop.test", "USD", 1, {})
+    cart = CartSnapshot("shop.test", "USD", ())
+    result = asyncio.run(controller.handle_turn(
+        "session", "turn", 1, 1, "find snowboards", evidence, cart,
+        available_tools={"search_catalog"},
+    ))
+    assert result.status == "evidence_required"
+    assert result.selected_tool == "search_catalog"
+
+
 def test_providers_reject_legacy_bare_intent(monkeypatch):
     bare = {
         "schema_version": "1.0.0", "intent_id": "legacy", "operation": "search",
