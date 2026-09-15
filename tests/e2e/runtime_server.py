@@ -101,12 +101,15 @@ def storefront_page(*, product: bool = False, search_products: list[tuple[str, s
         search_grid = f'<main><ul id="product-grid" data-native-search-results>{cards}</ul></main>'
     return HTMLResponse(f"""<!doctype html><html><body>
 <a id="cart-icon-bubble" href="/cart"><span class="visually-hidden">Cart</span></a>
+<button type="button" data-cart-drawer-trigger aria-controls="CartDrawer">Open cart drawer</button>
+<cart-drawer id="CartDrawer" hidden aria-hidden="true"></cart-drawer>
 <div id="ishop-drake-root" data-shop-domain="{SHOP}" data-bootstrap-url="/bootstrap"
  data-search-url="/search"
  data-bootstrap-script-url="/assets/drake-bootstrap.js" data-bridge-script-url="/assets/drake-bridge.js"
  data-catalog-script-url="/assets/drake-catalog.js" data-voice-ws-url="ws://127.0.0.1:8765/ws"{product_data}></div>
 {search_grid}
 <script src="/assets/drake-voice.js"></script><script src="/assets/drake-widget.js"></script>
+<script>document.querySelector('[data-cart-drawer-trigger]').addEventListener('click',()=>document.querySelector('cart-drawer').removeAttribute('hidden'));</script>
 <script src="/assets/drake-bootstrap.js"></script></body></html>""")
 
 

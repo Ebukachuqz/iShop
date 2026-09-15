@@ -1691,7 +1691,10 @@ class ShoppingController:
     ) -> ControllerTurnResult:
         total_items = sum(l.quantity for l in current_cart.lines)
         lower_span = f"{intent.supporting_transcript_span} {intent.original_language_wording}".casefold()
-        wants_open = any(phrase in lower_span for phrase in ("open cart", "open my cart", "take me to my cart", "take me to cart", "go to cart", "navigate to cart"))
+        cart_wording = "cart" in lower_span or "my cat" in lower_span
+        wants_open = cart_wording and any(phrase in lower_span for phrase in (
+            "open", "show", "take me", "go to", "navigate", "see", "wetin",
+        ))
         command = None
         if wants_open:
             command = AuthorizedCommand(
@@ -1700,7 +1703,7 @@ class ShoppingController:
                 request_revision=request_revision, page_epoch=page_epoch,
                 expires_at_ms=int(time.time() * 1000) + 30_000,
                 operation=CommandOperation.NAVIGATE_STOREFRONT,
-                parameters={"url": "/cart"},
+                parameters={"url": "/cart", "presentation": "drawer_or_page"},
                 expected_cart_fingerprint=current_cart.fingerprint(),
             )
 

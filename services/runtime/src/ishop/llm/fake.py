@@ -347,7 +347,7 @@ class FakeLlmProvider(LlmProvider):
             return intent, TurnDecision(mode=DecisionMode.ACT, intent=intent, target_reference=target_ref)
 
         # 3. View cart
-        if any(phrase in lower for phrase in ("view cart", "show cart", "show my cart", "what is in my cart", "check cart")):
+        if any(phrase in lower for phrase in ("view cart", "show cart", "show my cart", "what is in my cart", "check cart", "wetin dey my cart", "wetin dai my cart", "see wetin dey my cart")):
             intent = ShoppingIntent(
                 intent_id=intent_id,
                 operation=IntentOperation.VIEW_CART,

@@ -186,7 +186,9 @@ try {
   await submit('Set quantity to 2 for the Ice Complete Snowboard', 'completed');
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(cart.items[0].quantity, 2, 'absolute quantity');
-  await submit('Show cart');
+  await submit('Show cart', null);
+  await waitFor(() => evaluate("document.querySelector('cart-drawer').getAttribute('aria-hidden') === 'false'"));
+  check(await evaluate("document.querySelector('cart-drawer').getAttribute('aria-hidden')"), 'false', 'show cart opens the theme drawer');
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('2 items')"), true, 'authoritative cart read');
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('Complete Snowboard (Ice), quantity 2, 699.95 USD each, 1399.90 USD line total')"), true, 'cart detail observation survives widget, transport, and controller');
   await submit('Remove the Ice Complete Snowboard from my cart', 'completed');

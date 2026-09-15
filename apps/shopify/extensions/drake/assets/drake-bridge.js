@@ -50,12 +50,37 @@ export function syncCartIndicators(cart, documentRef = typeof document !== 'unde
 }
 
 export class StorefrontBridge {
-  constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null, navigate = null, origin = null } = {}) {
+  constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null, navigate = null, origin = null, documentRef = null } = {}) {
     this.ajax = ajaxAdapter || new AjaxCartAdapter();
     this.actions = actionsAdapter || new StandardActionsAdapter();
     this.webMcp = webMcpAdapter || new WebMcpAdapter();
     this.navigate = navigate || ((url) => window.location.assign(url));
     this.origin = origin || (typeof window !== 'undefined' ? window.location.origin : 'https://storefront.invalid');
+    this.document = documentRef || (typeof document !== 'undefined' ? document : null);
+  }
+
+  _openCartDrawer() {
+    const documentRef = this.document;
+    if (!documentRef?.querySelector) return false;
+    const drawer = documentRef.querySelector('cart-drawer, [data-cart-drawer], #CartDrawer, .cart-drawer');
+    if (!drawer) return false;
+    try {
+      if (typeof drawer.open === 'function') drawer.open();
+      else {
+        const trigger = [
+          '[data-cart-drawer-trigger]', '[aria-controls="CartDrawer"]',
+          '[aria-controls*="cart-drawer" i]', '#cart-icon-bubble',
+        ].map((selector) => documentRef.querySelector(selector)).find(Boolean);
+        if (!trigger || typeof trigger.click !== 'function') return false;
+        trigger.click();
+      }
+      drawer.removeAttribute?.('hidden');
+      drawer.setAttribute?.('aria-hidden', 'false');
+      drawer.classList?.add?.('active');
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   detectPreferredTransport() {
@@ -135,6 +160,9 @@ export class StorefrontBridge {
       const trustedPath = pathname === '/' || pathname === '/cart' || pathname.startsWith('/cart') || pathname.startsWith('/products/') || pathname.startsWith('/collections/') || pathname.startsWith('/search') || pathname.startsWith('/pages/');
       if (destination.origin !== this.origin || !trustedPath) {
         return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Navigation destination is not a trusted Shopify product or collection path'], before_cart: beforeCart, after_cart: beforeCart };
+      }
+      if (pathname === '/cart' && command.parameters?.presentation === 'drawer_or_page' && this._openCartDrawer()) {
+        return { ok: true, outcome: 'navigation_handoff', transport_used: 'cart_drawer', errors: [], before_cart: beforeCart, after_cart: beforeCart };
       }
       this.navigate(destination.toString());
       return { ok: true, outcome: 'navigation_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };

@@ -817,3 +817,14 @@ def test_cs24_view_cart_in_place(four_item_evidence, empty_cart):
     assert res.status == "completed"
     assert "empty" in res.spoken_response
     assert res.authorized_command is None
+
+
+def test_pidgin_show_cart_requests_drawer_with_safe_page_fallback(four_item_evidence, empty_cart):
+    controller = ShoppingController(llm_provider=FakeLlmProvider())
+    result = asyncio.run(controller.handle_turn(
+        session_id="sess_pidgin_cart", turn_id="turn_1", request_revision=1, page_epoch=1,
+        transcript="I wan see wetin dey my cart", evidence=four_item_evidence, current_cart=empty_cart,
+    ))
+    assert result.authorized_command is not None
+    assert result.authorized_command.operation == CommandOperation.NAVIGATE_STOREFRONT
+    assert result.authorized_command.parameters == {"url": "/cart", "presentation": "drawer_or_page"}

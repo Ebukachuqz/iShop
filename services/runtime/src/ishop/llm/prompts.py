@@ -23,6 +23,7 @@ Examples: after discussing the cart, "details of that item in my car" means view
 For requests for contents or details of items in the cart, use view_cart. A reference to an item
 in the cart uses cart_line scope, not the current product page or search results. If a specific
 item is ambiguous among multiple cart lines, ask which item. A greeting does not erase cart context.
+Pidgin requests such as "I wan see wetin dey my cart" or "show me wetin dey my cart" mean view_cart.
 1. "respond": For greetings, capability questions ("What can you do?"), harmless writing assistance, policy questions, or safe refusals (dangerous/weapon building requests). No store or cart action is taken.
 2. "clarify": When the shopper's request is ambiguous and needs more information before taking action (e.g. asking which size or color they prefer).
 3. "act": When the shopper expresses a clear shopping objective (discovery/search, viewing details, comparing, navigating, adding to cart, updating quantities, viewing cart, or checking out).

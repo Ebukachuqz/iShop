@@ -34,8 +34,8 @@ function loadVoice(AudioOverride = null) {
   return window.IShopVoiceSession;
 }
 
-function loadWidgetState(customDoc) {
-  const window = {};
+function loadWidgetState(customDoc, customWindow = {}, customLocation = null, customMutationObserver = undefined) {
+  const window = customWindow;
   const mockStorage = {
     _data: {},
     getItem: (k) => mockStorage._data[k] || null,
@@ -48,11 +48,85 @@ function loadWidgetState(customDoc) {
     document: doc,
     crypto,
     sessionStorage: mockStorage,
-    location: { host: 'shop.myshopify.com', pathname: '/', search: '' },
+    location: customLocation || { host: 'shop.myshopify.com', pathname: '/', search: '' },
+    MutationObserver: customMutationObserver,
+    setTimeout,
+    clearTimeout,
+    URL,
     console,
   });
   return window.IShopDrakeWidget;
 }
+
+test('incremental page scrolling supports continue and stop without an LLM turn', () => {
+  const calls = [];
+  const browserWindow = {
+    innerHeight: 1000, scrollY: 480, scrollX: 0,
+    scrollBy: (options) => calls.push(['by', options]),
+    scrollTo: (options) => calls.push(['to', options]),
+  };
+  const { DrakeWidget } = loadWidgetState({ getElementById: () => null }, browserWindow);
+  const messages = [];
+  const widget = {
+    lastScrollDirection: null,
+    addMessage: (_role, text) => messages.push(text),
+    setState() {},
+    navigateSearchPage: () => false,
+  };
+  assert.equal(DrakeWidget.prototype.handleBrowserControl.call(widget, 'scroll down'), true);
+  assert.equal(calls[0][1].top, 400);
+  assert.equal(DrakeWidget.prototype.handleBrowserControl.call(widget, 'continue'), true);
+  assert.equal(calls[1][1].top, 400);
+  assert.equal(DrakeWidget.prototype.handleBrowserControl.call(widget, 'stop'), true);
+  assert.equal(calls[2][0], 'to');
+  assert.equal(widget.lastScrollDirection, null);
+  assert.match(messages.at(-1), /stopped scrolling/i);
+});
+
+test('search pagination follows only same-origin Shopify search links', () => {
+  let assigned = '';
+  const locationRef = {
+    host: 'shop.myshopify.com', origin: 'https://shop.myshopify.com', pathname: '/search', search: '?q=board',
+    assign: (url) => { assigned = url; },
+  };
+  const link = { href: 'https://shop.myshopify.com/search?q=board&page=2' };
+  const doc = { getElementById: () => null, querySelector: (selector) => selector === 'a[rel="next"]' ? link : null };
+  const { DrakeWidget } = loadWidgetState(doc, {}, locationRef);
+  const widget = { addMessage() {}, navigationInProgress: false };
+  assert.equal(DrakeWidget.prototype.navigateSearchPage.call(widget, 'next'), true);
+  assert.equal(assigned, link.href);
+  assert.equal(widget.navigationInProgress, true);
+  link.href = 'https://evil.test/search?q=board&page=3';
+  assigned = '';
+  assert.equal(DrakeWidget.prototype.navigateSearchPage.call(widget, 'next'), false);
+  assert.equal(assigned, '');
+});
+
+test('infinite-scroll grid mutations refresh the displayed result snapshot', async () => {
+  let callback = null;
+  let observed = null;
+  class FakeMutationObserver {
+    constructor(handler) { callback = handler; }
+    observe(target, options) { observed = { target, options }; }
+    disconnect() {}
+  }
+  const grid = {};
+  const doc = { getElementById: () => null, querySelector: () => grid };
+  const locationRef = { host: 'shop.myshopify.com', origin: 'https://shop.myshopify.com', pathname: '/search', search: '?q=board' };
+  const { DrakeWidget } = loadWidgetState(doc, {}, locationRef, FakeMutationObserver);
+  let refreshes = 0;
+  const widget = {
+    nativeSearchObserver: null, nativeSearchRefreshTimer: null,
+    refreshCurrentNativeSearch: () => { refreshes += 1; },
+  };
+  DrakeWidget.prototype.observeNativeSearchChanges.call(widget);
+  assert.equal(observed.target, grid);
+  assert.equal(observed.options.childList, true);
+  assert.equal(observed.options.subtree, true);
+  callback();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(refreshes, 1);
+});
 
 test('voice widget exposes provider-neutral session and PCM utilities', () => {
   const voice = loadVoice();

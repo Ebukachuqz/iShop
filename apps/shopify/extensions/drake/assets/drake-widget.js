@@ -104,6 +104,10 @@
       this.nativeSearchKey = `ishop:native-search:${root.dataset.shopDomain || location.host}`;
       this.conversationResumeKey = `ishop:continuous-resume:${root.dataset.shopDomain || location.host}`;
       this.lastRevision = 0;
+      this.lastScrollDirection = null;
+      this.nativeSearchObserver = null;
+      this.nativeSearchRefreshTimer = null;
+      this.nativeSearchRefreshing = false;
       this.pageEpoch = 1;
       this.pageContext = null;
       try {
@@ -393,6 +397,7 @@
       this.textInput.value = "";
       this.addMessage("shopper", text);
       this.state.acceptFinal(text);
+      if (this.handleBrowserControl(text)) return;
       await this.submitShoppingRequest(text);
     }
     handleVoiceEvent(event) {
@@ -405,6 +410,7 @@
         this.state.acceptFinal(event.text);
         this.caption.textContent = "";
         this.addMessage("shopper", event.text || "");
+        if (this.handleBrowserControl(event.text || "")) return;
         this.submitShoppingRequest(event.text || "");
       } else if (event.type === "error") {
         if (event.request_revision != null && Number(event.request_revision) !== Number(this.client?.revision)) return;
@@ -480,7 +486,8 @@
         this.pendingReceipts.delete(event.command_id);
         if (event.verified) {
           if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
-          this.setState("completed", { verifiedReceipt: receipt.result });
+          if (receipt.result?.transport_used === "cart_drawer") this.setState("ready");
+          else this.setState("completed", { verifiedReceipt: receipt.result });
         } else {
           if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
           const detail = shopperError(receipt.result?.errors?.[0]);
@@ -609,10 +616,11 @@
       this.client.revision = Math.max(this.client.revision, Number(objective.request_revision));
       this.setState("checking");
       try {
-        const observed = await this.catalog.nativeSearch.observe(objective.arguments, 20);
+        const observed = await this.catalog.nativeSearch.observe(objective.arguments, 50);
         this.currentNativeSearch = observed;
         this.pendingCatalogProducts = observed.products;
         this.pendingCatalogQuery = objective.arguments.query;
+        this.observeNativeSearchChanges();
         const observation = {
           tool: "search_catalog", ok: true, source: "native_search_rendered",
           data: { products: observed.products, coverage: "rendered_page", native_search: observed.native_search },
@@ -651,23 +659,99 @@
       this.offerConversationResume();
     }
 
+    handleBrowserControl(text) {
+      const normalized = String(text || "").toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+      let direction = null;
+      if (/\b(?:scroll|move|go)\s+(?:a\s+little\s+)?down\b/.test(normalized)) direction = 1;
+      if (/\b(?:scroll|move|go)\s+(?:a\s+little\s+)?up\b/.test(normalized)) direction = -1;
+      if ((normalized === "continue" || normalized === "keep going") && this.lastScrollDirection) {
+        direction = this.lastScrollDirection;
+      }
+      if (direction) {
+        this.lastScrollDirection = direction;
+        const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const amount = Math.max(160, Math.round((window.innerHeight || 600) * 0.4)) * direction;
+        window.scrollBy({ top: amount, left: 0, behavior: reduced ? "auto" : "smooth" });
+        this.addMessage("assistant", direction > 0 ? "Scrolling down a little." : "Scrolling up a little.");
+        this.setState("ready");
+        return true;
+      }
+      if ((normalized === "stop" || normalized === "stop scrolling") && this.lastScrollDirection) {
+        window.scrollTo({ top: window.scrollY, left: window.scrollX, behavior: "auto" });
+        this.lastScrollDirection = null;
+        this.addMessage("assistant", "Okay, I stopped scrolling.");
+        this.setState("ready");
+        return true;
+      }
+      if (/\b(?:next page|next results|show more results)\b/.test(normalized)) {
+        return this.navigateSearchPage("next");
+      }
+      if (/\b(?:previous page|previous results|back a page)\b/.test(normalized)) {
+        return this.navigateSearchPage("previous");
+      }
+      if (normalized !== "continue") this.lastScrollDirection = null;
+      return false;
+    }
+
+    navigateSearchPage(direction) {
+      if (!location.pathname.endsWith("/search")) return false;
+      const selectors = direction === "next"
+        ? ['a[rel="next"]', '.pagination__item--next a', 'a[aria-label*="next" i]']
+        : ['a[rel="prev"]', '.pagination__item--prev a', 'a[aria-label*="previous" i]'];
+      const link = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
+      if (!link?.href && direction === "next") {
+        const loadMore = document.querySelector('[data-load-more] button, .load-more button, button[aria-label*="load more" i]');
+        if (loadMore && typeof loadMore.click === "function") {
+          loadMore.click();
+          this.addMessage("assistant", "Loading more results.");
+          return true;
+        }
+      }
+      if (!link?.href) return false;
+      const destination = new URL(link.href, location.origin);
+      if (destination.origin !== location.origin || !destination.pathname.endsWith('/search')) return false;
+      this.addMessage("assistant", direction === "next" ? "Opening the next page of results." : "Opening the previous page of results.");
+      this.navigationInProgress = true;
+      location.assign(destination.toString());
+      return true;
+    }
+
     async refreshCurrentNativeSearch() {
       if (!this.catalog?.nativeSearch || !location.pathname.endsWith('/search')) return;
+      if (this.nativeSearchRefreshing) return;
       const params = new URLSearchParams(location.search);
       if (!params.get('q')) return;
       const arguments_ = { query: params.get('q') };
       if (params.get('sort_by')) arguments_.sort_by = params.get('sort_by');
       if (params.get('filter.v.price.gte')) arguments_.min_price = params.get('filter.v.price.gte');
       if (params.get('filter.v.price.lte')) arguments_.max_price = params.get('filter.v.price.lte');
+      this.nativeSearchRefreshing = true;
       try {
-        const observed = await this.catalog.nativeSearch.observe(arguments_, 20);
+        const observed = await this.catalog.nativeSearch.observe(arguments_, 50);
         this.currentNativeSearch = observed;
         this.pendingCatalogProducts = observed.products;
         this.pendingCatalogQuery = arguments_.query;
         this.candidates = new CandidateSet(observed.products);
+        this.observeNativeSearchChanges();
       } catch (_) {
         this.currentNativeSearch = null;
+      } finally {
+        this.nativeSearchRefreshing = false;
       }
+    }
+
+    observeNativeSearchChanges() {
+      if (typeof MutationObserver !== "function" || !location.pathname.endsWith('/search')) return;
+      const grid = document.querySelector('#product-grid, main [id*="product-grid"], main .product-grid, main [data-native-search-results]');
+      if (!grid || this.nativeSearchObserver?.target === grid) return;
+      this.nativeSearchObserver?.disconnect?.();
+      const observer = new MutationObserver(() => {
+        clearTimeout(this.nativeSearchRefreshTimer);
+        this.nativeSearchRefreshTimer = setTimeout(() => this.refreshCurrentNativeSearch(), 250);
+      });
+      observer.observe(grid, { childList: true, subtree: true });
+      observer.target = grid;
+      this.nativeSearchObserver = observer;
     }
 
     async retrieveToolObservation(request, turnId, requestRevision) {
@@ -799,6 +883,7 @@
       try {
         if (command.operation === "navigate_storefront") this.navigationInProgress = true;
         const result = await this.bridge.executeCommand(command);
+        if (result.transport_used === "cart_drawer") this.navigationInProgress = false;
         this.pendingReceipts.set(command.command_id, {
           result,
           request_revision: command.request_revision,

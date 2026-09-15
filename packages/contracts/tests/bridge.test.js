@@ -8,6 +8,39 @@ import { WebMcpAdapter } from '../../../apps/shopify/extensions/drake/src/bridge
 import { StorefrontBridge } from '../../../apps/shopify/extensions/drake/src/bridge/bridge.js';
 
 describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
+  test('show cart opens a recognized theme drawer before falling back to the cart page', async () => {
+    let opened = 0;
+    let navigated = 0;
+    const drawer = { open: () => { opened += 1; }, removeAttribute() {}, setAttribute() {}, classList: { add() {} } };
+    const documentRef = { querySelector: (selector) => selector.startsWith('cart-drawer') ? drawer : null };
+    const bridge = new StorefrontBridge({
+      documentRef, origin: 'https://shop.test', navigate: () => { navigated += 1; },
+      ajaxAdapter: { readCart: async () => ({ shop_id: 'shop.test', currency: 'USD', lines: [] }) },
+      webMcpAdapter: { isAvailable: () => false }, actionsAdapter: { isAvailable: () => false },
+    });
+    const receipt = await bridge.executeCommand({
+      shop_id: 'shop.test', operation: 'navigate_storefront',
+      parameters: { url: '/cart', presentation: 'drawer_or_page' },
+    });
+    assert.equal(receipt.outcome, 'navigation_handoff');
+    assert.equal(receipt.transport_used, 'cart_drawer');
+    assert.equal(opened, 1);
+    assert.equal(navigated, 0);
+  });
+
+  test('show cart navigates to cart when the theme has no recognized drawer', async () => {
+    let destination = '';
+    const bridge = new StorefrontBridge({
+      documentRef: { querySelector: () => null }, origin: 'https://shop.test', navigate: (url) => { destination = url; },
+      ajaxAdapter: { readCart: async () => ({ shop_id: 'shop.test', currency: 'USD', lines: [] }) },
+      webMcpAdapter: { isAvailable: () => false }, actionsAdapter: { isAvailable: () => false },
+    });
+    await bridge.executeCommand({
+      shop_id: 'shop.test', operation: 'navigate_storefront',
+      parameters: { url: '/cart', presentation: 'drawer_or_page' },
+    });
+    assert.equal(destination, 'https://shop.test/cart');
+  });
   test('cart presentation uses matching observed line keys and rejects a changed cart', async () => {
     const cart = { shop_id: 'shop', currency: 'USD', lines: [{ variant_id: 'v1', quantity: 1, line_key: 'mcp-key' }] };
     const observed = { ...cart, lines: [{ ...cart.lines[0], line_key: 'ajax-key' }],
