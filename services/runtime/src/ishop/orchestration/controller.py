@@ -1047,7 +1047,9 @@ class ShoppingController:
             IntentOperation.ADD_TO_CART: {"update_cart"},
             IntentOperation.UPDATE_QUANTITY: {"update_cart"},
             IntentOperation.REMOVE_FROM_CART: {"update_cart"},
-            IntentOperation.NAVIGATE: {"get_product", "show_variant", "browse_store"},
+            # Named product navigation resolves one trusted product URL.
+            # Variant navigation and collection browsing have distinct intents.
+            IntentOperation.NAVIGATE: {"get_product"},
             IntentOperation.REQUEST_CHECKOUT: {"proceed_to_checkout"},
             IntentOperation.CANCEL_CART: {"cancel_cart"},
             IntentOperation.MANAGE_ORDERS: {"manage_orders"},
@@ -1121,17 +1123,20 @@ class ShoppingController:
                         session_id, turn_id, request_revision, page_epoch, "error",
                         "My reasoning service is temporarily rate limited. Please wait before trying again.",
                         intent, failure_code="reasoning_rate_limited")
+                if isinstance(exc, (ValueError, KeyError)):
+                    break
                 selection_request = replace(selection_request, validation_feedback=str(exc))
                 selection = None
                 proposal = None
         if selection is None or proposal is None:
             logger.warning(
-                "Shopping tool selection failed profile=%s turn=%s revision=%s operation=%s detail=%s",
+                "Shopping tool selection failed profile=%s turn=%s revision=%s operation=%s detail=%s reason=%s",
                 self.llm_provider.profile.profile_id,
                 turn_id,
                 request_revision,
                 intent.operation.value,
                 type(selection_error).__name__,
+                str(selection_error)[:300] if selection_error else "unknown",
             )
             return ControllerTurnResult(
                 session_id=session_id, turn_id=turn_id,

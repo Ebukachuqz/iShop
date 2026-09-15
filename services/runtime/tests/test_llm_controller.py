@@ -762,6 +762,34 @@ def test_selected_result_pronoun_navigates_to_product(store_evidence, empty_cart
     assert opened.authorized_command.parameters["url"] == "/products/prod_cap"
 
 
+def test_named_navigation_uses_get_product_without_second_llm_selection(store_evidence, empty_cart):
+    class SelectionMustNotRun(FakeLlmProvider):
+        async def select_tool(self, request):
+            raise AssertionError("named product navigation must select get_product deterministically")
+
+    provider = SelectionMustNotRun()
+    provider.register_custom_intent("open embroidered cap", ShoppingIntent(
+        intent_id="int_named_open", operation=IntentOperation.NAVIGATE,
+        product_query="Embroidered Cap", is_explicit_checkout_request=False,
+        supporting_transcript_span="Open Embroidered Cap",
+    ))
+    products = {
+        product_id: replace(product, url=f"/products/{product_id}")
+        for product_id, product in store_evidence.products.items()
+    }
+    evidence = replace(store_evidence, products=products)
+
+    opened = asyncio.run(ShoppingController(provider).handle_turn(
+        "s-named-nav", "t1", 1, 1, "open embroidered cap", evidence, empty_cart,
+        available_tools={"get_product", "show_variant", "browse_store"},
+    ))
+
+    assert opened.status == "completed"
+    assert opened.selected_tool == "get_product"
+    assert opened.authorized_command is not None
+    assert opened.authorized_command.parameters["url"] == "/products/prod_cap"
+
+
 def test_incomplete_real_provider_tool_arguments_are_hydrated_from_validated_intent(store_evidence, empty_cart):
     class IncompleteToolSelector(FakeLlmProvider):
         async def select_tool(self, request):

@@ -39,7 +39,9 @@ def test_browse_store_uses_browser_observation_on_same_persisted_turn():
     assert second.status == "completed"
     assert "Snow" in second.spoken_response
     assert len(controller.get_session_state("sess").tool_observations) == 1
-    assert provider.selections == 1
+    # A sole qualified browser tool is selected locally and the persisted
+    # proposal is resumed without spending either model-selection call.
+    assert provider.selections == 0
 
 
 def test_policy_observation_is_attributed_and_store_instructions_are_not_followed():

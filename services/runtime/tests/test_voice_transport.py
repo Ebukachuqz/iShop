@@ -335,6 +335,31 @@ def test_provider_start_failure_is_truthful_and_non_authorizing():
     }
 
 
+def test_provider_protocol_disconnect_during_start_is_reported_without_crashing():
+    from websockets.exceptions import ConnectionClosedError
+
+    class ProtocolDisconnectSession(FakeRealtimeSession):
+        async def start(self):
+            raise ConnectionClosedError(None, None)
+
+    app = create_voice_app(
+        signing_secret=SECRET,
+        allowed_origins={ORIGIN},
+        session_factory=lambda **kwargs: ProtocolDisconnectSession(**kwargs),
+    )
+    with TestClient(app).websocket_connect(
+        f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}
+    ) as socket:
+        socket.send_json({"type": "authenticate", "grant": signed_grant()})
+        socket.receive_json()
+        socket.send_json({"type": "start_turn", "revision": 1})
+        error = socket.receive_json()
+
+    assert error["type"] == "error"
+    assert error["error_code"] == "provider_start_failed"
+    assert error["authorizes_interpretation"] is False
+
+
 def shopping_turn_payload(**changes):
     payload = {
         "type": "shopping_turn",

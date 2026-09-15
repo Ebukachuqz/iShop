@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, model_validator
+from websockets.exceptions import ConnectionClosed
 
 from ishop.domain.models import AuthorizedCommand, CartLine, CartSnapshot, CommandOperation, SessionGrant
 from ishop.domain.journal import CommandJournal, CommandStatus
@@ -257,7 +258,7 @@ def create_voice_app(
             except asyncio.CancelledError:
                 await active_session.cancel()
                 raise
-            except (SpeechProviderError, TimeoutError):
+            except (SpeechProviderError, ConnectionClosed, TimeoutError):
                 await _send_error(websocket, "provider_stream_failed")
                 await active_session.cancel()
             finally:
@@ -346,7 +347,12 @@ def create_voice_app(
                             channels=channels,
                         )
                         started = await asyncio.wait_for(session.start(), timeout=15)
-                    except (SpeechProviderError, TimeoutError, TypeError, ValueError):
+                    except (SpeechProviderError, ConnectionClosed, TimeoutError, TypeError, ValueError) as exc:
+                        logger.warning(
+                            "Speech provider start failed profile=%s error_type=%s",
+                            grant.asr_profile_id,
+                            type(exc).__name__,
+                        )
                         await _send_error(websocket, "provider_start_failed")
                         if session is not None:
                             await session.cancel()

@@ -83,6 +83,26 @@ test('incremental page scrolling supports continue and stop without an LLM turn'
   assert.match(messages.at(-1), /stopped scrolling/i);
 });
 
+test('empty final transcripts never create or submit a shopping turn', () => {
+  const { DrakeWidget } = loadWidgetState({ getElementById: () => null });
+  let submitted = 0;
+  let rendered = 0;
+  let state = '';
+  const widget = {
+    caption: { textContent: 'listening' },
+    setState: (value) => { state = value; },
+    addMessage: () => { rendered += 1; },
+    submitShoppingRequest: () => { submitted += 1; },
+  };
+
+  DrakeWidget.prototype.handleVoiceEvent.call(widget, { type: 'final_transcript', text: '   ' });
+
+  assert.equal(submitted, 0);
+  assert.equal(rendered, 0);
+  assert.equal(widget.caption.textContent, '');
+  assert.equal(state, 'ready');
+});
+
 test('search pagination follows only same-origin Shopify search links', () => {
   let assigned = '';
   const locationRef = {

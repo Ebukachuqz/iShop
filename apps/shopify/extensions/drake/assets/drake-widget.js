@@ -405,13 +405,19 @@
         this.state.setPartial(event.text);
         this.caption.textContent = event.text || "";
       } else if (event.type === "final_transcript") {
-        this.lastVoiceTranscript = event.text || "";
+        const finalText = String(event.text || "").trim();
+        if (!finalText) {
+          this.caption.textContent = "";
+          this.setState("ready");
+          return;
+        }
+        this.lastVoiceTranscript = finalText;
         if (this.editVoiceButton) this.editVoiceButton.hidden = false;
-        this.state.acceptFinal(event.text);
+        this.state.acceptFinal(finalText);
         this.caption.textContent = "";
-        this.addMessage("shopper", event.text || "");
-        if (this.handleBrowserControl(event.text || "")) return;
-        this.submitShoppingRequest(event.text || "");
+        this.addMessage("shopper", finalText);
+        if (this.handleBrowserControl(finalText)) return;
+        this.submitShoppingRequest(finalText);
       } else if (event.type === "error") {
         if (event.request_revision != null && Number(event.request_revision) !== Number(this.client?.revision)) return;
         const messages = {
@@ -776,12 +782,17 @@
     }
 
     async submitShoppingRequest(text, catalogEvidence = null, existingTurn = null, toolObservation = null) {
+      const normalizedText = String(text || "").trim();
+      if (!normalizedText) {
+        this.setState("ready");
+        return;
+      }
       if (!this.client || !this.bridge || !this.catalog) {
         this.setState("failed", { error: "Drake is not connected to this store yet. You can try again shortly." });
         return;
       }
       try {
-        this.pendingTranscript = text;
+        this.pendingTranscript = normalizedText;
         this.setState("checking");
         await this.client.connect();
         const includeStoreContext = Boolean(existingTurn || catalogEvidence || toolObservation);
@@ -840,7 +851,7 @@
           turn_id: turn.turnId,
           request_revision: turn.requestRevision,
           page_epoch: turn.pageEpoch,
-          transcript: text,
+          transcript: normalizedText,
           current_product_id: this.currentProductId,
           page_context: this.pageContext,
           context_phase: includeStoreContext ? "action" : "decision",
