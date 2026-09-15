@@ -462,7 +462,9 @@
       } else if (event.type === "tts_unavailable") {
         if (Number(event.request_revision) !== Number(this.client?.revision) || Number(event.page_epoch) !== Number(this.pageEpoch)) return;
         console.warn('[Drake] Spoken reply unavailable:', event.failure_code || 'unknown');
-        this.audioStatus.textContent = event.retryable
+        this.audioStatus.textContent = event.failure_code === "session_initialization_error"
+          ? "The selected Pidgin voice could not start. Your text reply is shown above."
+          : event.retryable
           ? "The voice service is temporarily unavailable. Your text reply is shown above."
           : "Spoken reply unavailable from the selected voice. Your text reply is shown above.";
         this.playButton.hidden = true;

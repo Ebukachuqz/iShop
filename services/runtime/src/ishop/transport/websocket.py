@@ -230,9 +230,13 @@ def create_voice_app(
             except Exception as exc:
                 logger.warning("TTS unavailable turn=%s revision=%s error_type=%s",
                                payload["turn_id"], payload["request_revision"], type(exc).__name__)
+                provider_code = getattr(exc, "code", None)
+                failure_code = provider_code if isinstance(provider_code, str) else None
+                if not failure_code or not failure_code.replace("_", "").isalnum():
+                    failure_code = "provider_error" if hasattr(exc, "provider_name") else "synthesis_error"
                 await websocket.send_json({"type": "tts_unavailable", "turn_id": payload["turn_id"],
                     "request_revision": payload["request_revision"], "page_epoch": payload["page_epoch"],
-                    "failure_code": "provider_error" if hasattr(exc, "provider_name") else "synthesis_error",
+                    "failure_code": failure_code[:64],
                     "retryable": bool(getattr(exc, "retryable", False))})
 
         def cancel_pending_tts() -> None:

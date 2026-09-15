@@ -7,6 +7,7 @@ import json
 import pytest
 from ishop.speech.realtime import SpeechEventKind
 from ishop.speech.sahara_stream import SaharaStreamingSession
+from ishop.tts.base import TtsProviderError
 from ishop.tts.sahara import SaharaTtsProvider
 
 
@@ -130,6 +131,20 @@ def test_sahara_tts_rebalances_a_short_final_chunk():
 
     chunks = _split_text("a" * 105)
     assert [len(chunk) for chunk in chunks] == [95, 10]
+
+
+def test_sahara_tts_preserves_safe_session_initialization_failure_code():
+    async def run():
+        socket = FakeSocket([{"message_type": "SESSION_INITIALIZATION_ERROR"}])
+        provider = SaharaTtsProvider("key", connector=connector_for(socket))
+        with pytest.raises(TtsProviderError) as raised:
+            await provider.synthesize("Please read this reply aloud.", generation=1)
+        return socket, raised.value
+
+    socket, error = asyncio.run(run())
+    assert error.code == "session_initialization_error"
+    assert error.retryable is True
+    assert socket.closed is True
 
 
 def test_cancel_closes_tts_before_audio_can_be_emitted():

@@ -130,7 +130,13 @@ class SaharaTtsSession(TtsSession):
             or payload.get("status")
             or "unexpected response"
         )
-        return TtsProviderError(f"Sahara TTS {kind}: {message}", "sahara", kind == "ERROR")
+        retryable = kind in {"ERROR", "SESSION_INITIALIZATION_ERROR"}
+        return TtsProviderError(
+            f"Sahara TTS {kind}: {message}",
+            "sahara",
+            retryable,
+            code=_safe_error_code(kind),
+        )
 
 
 class SaharaTtsProvider(TtsProvider):
@@ -215,3 +221,8 @@ def _split_text(text: str) -> list[str]:
 
 def _optional_int(value: Any) -> int | None:
     return int(value) if value is not None else None
+
+
+def _safe_error_code(value: str) -> str:
+    normalized = "".join(character.lower() if character.isalnum() else "_" for character in value)
+    return "_".join(part for part in normalized.split("_") if part)[:64] or "provider_error"

@@ -8,10 +8,17 @@ from typing import Any, AsyncIterator
 
 
 class TtsProviderError(Exception):
-    def __init__(self, message: str, provider_name: str, retryable: bool = True):
+    def __init__(
+        self,
+        message: str,
+        provider_name: str,
+        retryable: bool = True,
+        code: str | None = None,
+    ):
         super().__init__(message)
         self.provider_name = provider_name
         self.retryable = retryable
+        self.code = code
 
 
 @dataclass(frozen=True)

@@ -195,6 +195,7 @@ test('widget renders untrusted shopper and store text without HTML insertion', (
   assert.match(widgetSource, /Start conversation/);
   assert.match(widgetSource, /End conversation/);
   assert.match(widgetSource, /Correct transcript/);
+  assert.match(widgetSource, /selected Pidgin voice could not start/);
   assert.doesNotMatch(widgetSource, /event\.selected_tool \|\| "search_catalog"/);
   assert.match(widgetSource, /Here are the store’s search results/);
   assert.match(widgetSource, /offerConversationResume/);

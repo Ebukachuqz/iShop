@@ -662,6 +662,8 @@ def test_delayed_or_failed_tts_does_not_block_text_shopping_result():
         unavailable = ws.receive_json()
         assert unavailable["type"] == "tts_unavailable"
         assert unavailable["request_revision"] == 1
+        assert unavailable["failure_code"] == "synthesis_error"
+        assert unavailable["retryable"] is False
 
 
 def test_progressive_tts_delivers_first_chunk_and_cancels_on_typed_turn():
