@@ -115,6 +115,12 @@
       this.node = null;
       this.pendingBytes = new Uint8Array(0);
       this.chunkBytes = options.chunkBytes || 4096;
+      this.continuous = Boolean(options.continuous);
+      this.onSpeechStart = options.onSpeechStart || function () {};
+      this.onSpeechEnd = options.onSpeechEnd || function () {};
+      this.detector = this.continuous ? new VoiceActivityDetector({ sampleRate: this.sampleRate, ...(options.vad || {}) }) : null;
+      this.preRollBytes = Math.round(this.sampleRate * this.channels * 2 * 0.25);
+      this.preRoll = new Uint8Array(0);
     }
 
     async start() {
@@ -131,9 +137,39 @@
       }
       this.source = this.context.createMediaStreamSource(this.stream);
       this.node = new AudioWorkletNode(this.context, "drake-pcm-processor", { numberOfInputs: 1, numberOfOutputs: 1, channelCount: this.channels });
-      this.node.port.onmessage = (event) => this._buffer(floatToPcm16(event.data));
+      this.node.port.onmessage = (event) => this._process(event.data);
       this.source.connect(this.node);
       this.node.connect(this.context.destination);
+    }
+
+    _process(samples) {
+      const pcm = floatToPcm16(samples);
+      if (!this.detector) {
+        this._buffer(pcm);
+        return;
+      }
+      const activity = this.detector.process(samples);
+      if (!activity.active && !activity.started) {
+        this._retainPreRoll(pcm);
+        return;
+      }
+      if (activity.started) {
+        this.onSpeechStart();
+        if (this.preRoll.byteLength) this._buffer(this.preRoll.buffer);
+        this.preRoll = new Uint8Array(0);
+      }
+      this._buffer(pcm);
+      if (activity.ended) {
+        this._flush();
+        this.onSpeechEnd(activity);
+      }
+    }
+
+    _retainPreRoll(buffer) {
+      const incoming = new Uint8Array(buffer);
+      const joined = new Uint8Array(this.preRoll.byteLength + incoming.byteLength);
+      joined.set(this.preRoll); joined.set(incoming, this.preRoll.byteLength);
+      this.preRoll = joined.slice(Math.max(0, joined.byteLength - this.preRollBytes));
     }
 
     _buffer(buffer) {
@@ -160,6 +196,7 @@
     stop(flush = false) {
       if (flush) this._flush();
       else this.pendingBytes = new Uint8Array(0);
+      this.preRoll = new Uint8Array(0);
       if (this.node) this.node.disconnect();
       if (this.source) this.source.disconnect();
       if (this.stream) this.stream.getTracks().forEach((track) => track.stop());
@@ -168,6 +205,49 @@
       this.source = null;
       this.stream = null;
       this.context = null;
+    }
+  }
+
+  class VoiceActivityDetector {
+    constructor(options = {}) {
+      this.sampleRate = options.sampleRate || 16000;
+      this.minimumSpeechSamples = this.sampleRate * ((options.minimumSpeechMs || 200) / 1000);
+      this.trailingSilenceSamples = this.sampleRate * ((options.trailingSilenceMs || 900) / 1000);
+      this.maximumSpeechSamples = this.sampleRate * (options.maximumSpeechSeconds || 30);
+      this.noiseFloor = 0.004;
+      this.speechSamples = 0;
+      this.silenceSamples = 0;
+      this.totalActiveSamples = 0;
+      this.active = false;
+    }
+
+    process(samples) {
+      let sum = 0;
+      for (let index = 0; index < samples.length; index += 1) sum += samples[index] * samples[index];
+      const rms = samples.length ? Math.sqrt(sum / samples.length) : 0;
+      const threshold = Math.max(0.015, this.noiseFloor * 3);
+      const speech = rms >= threshold;
+      let started = false;
+      let ended = false;
+      let maximumReached = false;
+      if (!this.active) {
+        if (speech) this.speechSamples += samples.length;
+        else {
+          this.speechSamples = 0;
+          this.noiseFloor = (this.noiseFloor * 0.95) + (rms * 0.05);
+        }
+        if (this.speechSamples >= this.minimumSpeechSamples) {
+          this.active = true; started = true; this.silenceSamples = 0; this.totalActiveSamples = this.speechSamples;
+        }
+      } else {
+        this.totalActiveSamples += samples.length;
+        this.silenceSamples = speech ? 0 : this.silenceSamples + samples.length;
+        maximumReached = this.totalActiveSamples >= this.maximumSpeechSamples;
+        if (this.silenceSamples >= this.trailingSilenceSamples || maximumReached) {
+          this.active = false; ended = true; this.speechSamples = 0; this.silenceSamples = 0; this.totalActiveSamples = 0;
+        }
+      }
+      return { active: this.active || ended, started, ended, maximumReached, rms };
     }
   }
 
@@ -276,6 +356,7 @@
     window.IShopVoiceSession = {
       VoiceSessionClient,
       PcmCapture,
+      VoiceActivityDetector,
       AudioPlayback,
       floatToPcm16,
       pcm16ToWav,

@@ -93,6 +93,18 @@ test('microphone capture emits provider-sized PCM chunks', () => {
   assert.equal(chunks[1].byteLength, 1024);
 });
 
+test('continuous voice detector starts after sustained speech and ends after trailing silence', () => {
+  const { VoiceActivityDetector } = loadVoice();
+  const detector = new VoiceActivityDetector({ sampleRate: 1000, minimumSpeechMs: 200, trailingSilenceMs: 300 });
+  const speech = new Float32Array(100).fill(0.1);
+  const silence = new Float32Array(100);
+  assert.equal(detector.process(speech).started, false);
+  assert.equal(detector.process(speech).started, true);
+  assert.equal(detector.process(silence).ended, false);
+  assert.equal(detector.process(silence).ended, false);
+  assert.equal(detector.process(silence).ended, true);
+});
+
 test('voice widget sends authenticated turns and suppresses duplicate finals', async () => {
   const voice = loadVoice();
   const sockets = [];
@@ -180,6 +192,8 @@ test('widget renders untrusted shopper and store text without HTML insertion', (
   assert.match(widgetSource, /Microphone access failed\. Type your request instead\./);
   assert.match(widgetSource, /shopping_runtime_failed/);
   assert.match(widgetSource, /shopping service failed while processing/);
+  assert.match(widgetSource, /Start conversation/);
+  assert.match(widgetSource, /End conversation/);
 });
 
 test('widget uses decision-first ingress before collecting store context', () => {

@@ -85,6 +85,9 @@
       this.currentProductHandle = null;
       this.candidates = new CandidateSet([]);
       this.capture = null;
+      this.continuousMode = false;
+      this.continuousTurn = null;
+      this.continuousAudioQueue = [];
       this.playback = voice ? new voice.AudioPlayback({ onStatus: (status) => {
         if (!this.audioStatus) return;
         this.audioStatus.textContent = { speaking: "Drake is speaking", blocked: "Press Play reply to hear Drake", unavailable: "Audio unavailable. Your reply is shown above.", idle: "" }[status] || "";
@@ -203,7 +206,12 @@
       this.stopButton = element("button", "drake-stop", "Stop");
       this.stopButton.type = "button";
       this.stopButton.hidden = true;
-      controls.append(this.micButton, this.stopButton);
+      this.conversationButton = element("button", "drake-conversation-start", "Start conversation");
+      this.conversationButton.type = "button";
+      this.endConversationButton = element("button", "drake-conversation-end", "End conversation");
+      this.endConversationButton.type = "button";
+      this.endConversationButton.hidden = true;
+      controls.append(this.micButton, this.stopButton, this.conversationButton, this.endConversationButton);
       this.audioStatus = element("p", "drake-audio-status");
       this.audioStatus.setAttribute("role", "status");
       this.playButton = element("button", "drake-play", "Play reply");
@@ -218,7 +226,8 @@
         this.textInput.focus();
       });
       controls.append(this.audioStatus, this.playButton, this.editVoiceButton);
-      this.panel.append(header, this.status, this.conversation, form, controls, element("p", "drake-privacy", "Your microphone starts only when you press Start speaking."));
+      this.privacy = element("p", "drake-privacy", "Your microphone starts only when you press Start speaking or Start conversation.");
+      this.panel.append(header, this.status, this.conversation, form, controls, this.privacy);
       this.root.replaceChildren(this.launcher, this.panel);
     }
     bind() {
@@ -226,6 +235,11 @@
       this.closeButton.addEventListener("click", () => this.setOpen(false));
       this.micButton.addEventListener("click", () => this.startListening());
       this.stopButton.addEventListener("click", () => this.finishListening());
+      this.conversationButton.addEventListener("click", () => this.startConversation());
+      this.endConversationButton.addEventListener("click", () => this.endConversation());
+      if (typeof document.addEventListener === "function") document.addEventListener("visibilitychange", () => {
+        if (document.hidden && this.continuousMode) this.endConversation("Conversation paused because this tab is hidden.");
+      });
       this.panel.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); this.submitText(); });
     }
     setClient(client, integrations) {
@@ -244,7 +258,78 @@
       this.panel.hidden = !this.open;
       this.launcher.setAttribute("aria-expanded", String(this.open));
       this.launcher.setAttribute("aria-label", this.open ? "Close Drake shopping assistant" : "Open Drake shopping assistant");
+      if (!this.open && this.continuousMode) this.endConversation();
       if (this.open) this.textInput.focus();
+    }
+    async startConversation() {
+      if (!this.client || !this.voice || this.continuousMode) return;
+      try {
+        if (this.playback) this.playback.interrupt();
+        this.continuousMode = true;
+        this.capture = new this.voice.PcmCapture({
+          sampleRate: 16000, channels: 1, continuous: true,
+          onSpeechStart: () => this.beginContinuousUtterance(),
+          onSpeechEnd: (activity) => this.finishContinuousUtterance(activity),
+          onChunk: (chunk) => this.sendContinuousAudio(chunk),
+        });
+        await this.capture.start();
+        this.micButton.hidden = true; this.stopButton.hidden = true;
+        this.conversationButton.hidden = true; this.endConversationButton.hidden = false;
+        this.privacy.textContent = "Conversation microphone is on. Drake sends audio only after speech is detected.";
+        this.setState("listening");
+      } catch (_) {
+        this.continuousMode = false;
+        if (this.capture) this.capture.stop();
+        this.capture = null;
+        this.setState("failed", { error: "Microphone access failed. Type your request instead." });
+      }
+    }
+    beginContinuousUtterance() {
+      if (!this.continuousMode) return;
+      if (this.playback) this.playback.interrupt();
+      this.continuousAudioQueue = [];
+      this.continuousTurn = this.client.startTurn({}).then(() => {
+        this.lastRevision = this.client.revision;
+        try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
+        for (const chunk of this.continuousAudioQueue.splice(0)) this.client.sendAudio(chunk);
+      }).catch(() => this.endConversation("The speech service could not start. You can still type."));
+      this.setState("listening");
+    }
+    sendContinuousAudio(chunk) {
+      if (!this.continuousTurn) return;
+      this.continuousAudioQueue.push(chunk);
+      if (this.continuousAudioQueue.length > 16) this.continuousAudioQueue.shift();
+      this.continuousTurn.then(() => {
+        const next = this.continuousAudioQueue.shift();
+        if (next) this.client.sendAudio(next);
+      }).catch(() => {});
+    }
+    finishContinuousUtterance(activity = {}) {
+      const turn = this.continuousTurn;
+      this.continuousTurn = null;
+      if (!turn) return;
+      if (activity.maximumReached) {
+        this.continuousAudioQueue = [];
+        turn.then(() => this.client.cancelTurn()).catch(() => {});
+        this.addMessage("assistant", "That voice request reached 30 seconds, so I did not act on a possibly incomplete instruction. Please try a shorter request.");
+        this.setState("listening");
+        return;
+      }
+      turn.then(() => {
+        for (const chunk of this.continuousAudioQueue.splice(0)) this.client.sendAudio(chunk);
+        this.client.finishTurn();
+      }).catch(() => {});
+      this.setState("interpreting");
+    }
+    endConversation(message = "") {
+      if (this.capture) this.capture.stop(false);
+      this.capture = null; this.continuousMode = false; this.continuousTurn = null; this.continuousAudioQueue = [];
+      if (this.client) this.client.cancelTurn();
+      if (this.playback) this.playback.interrupt();
+      this.micButton.hidden = false; this.stopButton.hidden = true;
+      this.conversationButton.hidden = false; this.endConversationButton.hidden = true;
+      this.privacy.textContent = message || "Your microphone starts only when you press Start speaking or Start conversation.";
+      this.setState("ready");
     }
     setState(name, detail) {
       const view = this.state.transition(name, detail);
