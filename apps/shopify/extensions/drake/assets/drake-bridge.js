@@ -101,6 +101,17 @@ export class StorefrontBridge {
     }
   }
 
+  async describeCart(cart) {
+    if (cart.display_lines) return cart;
+    try {
+      const observed = await this.ajax.readCart();
+      if (observed.shop_id === cart.shop_id && isCartEquivalent(observed, cart)) {
+        return observed;
+      }
+    } catch (_) { /* Keep the authoritative cart; presentation is optional. */ }
+    return cart;
+  }
+
   async executeCommand(command) {
     // Runtime-minted commands carry the schema envelope. Keep the adapter
     // usable with legacy simulator fixtures while the WebSocket boundary

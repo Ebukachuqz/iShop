@@ -172,7 +172,9 @@
   }
 
   class AudioPlayback {
-    constructor() {
+    constructor(options = {}) {
+      this.onStatus = options.onStatus || function () {};
+      this.blocked = false;
       this.generation = 0;
       this.queue = [];
       this.active = null;
@@ -186,23 +188,43 @@
     }
 
     interrupt() {
+      this.blocked = false;
       this.generation += 1;
       this.queue = [];
       if (this.active) {
+        URL.revokeObjectURL(this.active.src);
+        this.active.onended = null;
+        this.active.onerror = null;
         this.active.pause();
         this.active.src = "";
         this.active = null;
       }
+      this.onStatus("idle");
     }
 
+    retry() { this.blocked = false; this._playNext(); }
+
     _playNext() {
-      if (this.active || !this.queue.length) return;
+      if (this.blocked || this.active || !this.queue.length) return;
       const chunk = this.queue.shift();
       const audio = new Audio(URL.createObjectURL(new Blob([chunk.audio], { type: "audio/" + (chunk.format || "wav") })));
       this.active = audio;
-      audio.onended = () => { URL.revokeObjectURL(audio.src); this.active = null; this._playNext(); };
-      audio.onerror = () => { URL.revokeObjectURL(audio.src); this.active = null; this._playNext(); };
-      audio.play().catch(() => { this.active = null; });
+      const finish = () => {
+        if (this.active !== audio) return;
+        URL.revokeObjectURL(audio.src); this.active = null;
+        this.onStatus("idle"); this._playNext();
+      };
+      audio.onended = finish;
+      audio.onerror = () => { finish(); this.onStatus("unavailable"); };
+      audio.play().then(() => {
+        if (this.active === audio) this.onStatus("speaking");
+      }).catch((error) => {
+        if (this.active !== audio) return;
+        URL.revokeObjectURL(audio.src); this.active = null;
+        if (error?.name === "NotAllowedError") {
+          this.blocked = true; this.queue.unshift(chunk); this.onStatus("blocked");
+        } else { this.onStatus("unavailable"); this._playNext(); }
+      });
     }
   }
 

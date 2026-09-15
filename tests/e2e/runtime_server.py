@@ -64,6 +64,7 @@ async def shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> dict[st
             available_tools=set(payload.get("available_tools") or []),
             tool_observation=payload.get("tool_observation"),
             context_phase=payload.get("context_phase", "action"),
+            cart_details=(cart_raw or {}).get("display_lines", []),
         )
         session_store.save(session_id, controller.export_session_state(session_id))
     response: dict[str, Any] = {
@@ -196,7 +197,18 @@ async def collection_products() -> dict[str, Any]:
 
 @app.get("/cart.js")
 async def get_cart() -> dict[str, Any]:
-    return {"currency": "USD", "items": cart_items}
+    products = [await product(), await multi_location_product(), await multi_managed_product()]
+    items = []
+    for line in cart_items:
+        item = dict(line)
+        for catalog_product in products:
+            for variant in catalog_product["variants"]:
+                if str(variant["id"]) == str(line["variant_id"]):
+                    item.update(product_id=catalog_product["id"], product_title=catalog_product["title"],
+                                variant_title=variant["title"], final_price=variant["price"],
+                                final_line_price=variant["price"] * line["quantity"])
+        items.append(item)
+    return {"currency": "USD", "items": items}
 
 
 @app.post("/cart/add.js")

@@ -659,6 +659,35 @@ def test_delayed_or_failed_tts_does_not_block_text_shopping_result():
         assert res["status"] == "completed"
         assert res["spoken_response"] == "Here are 2 snowboards."
         assert res["result_product_ids"] == ["1", "2"]
+        unavailable = ws.receive_json()
+        assert unavailable["type"] == "tts_unavailable"
+        assert unavailable["request_revision"] == 1
+
+
+def test_progressive_tts_delivers_first_chunk_and_cancels_on_typed_turn():
+    cancelled = []
+    async def turn_handler(payload, grant):
+        return {"turn_id": payload["turn_id"], "request_revision": payload["request_revision"],
+                "page_epoch": 1, "status": "completed", "spoken_response": "Hello shopper."}
+    async def tts(text, revision):
+        try:
+            yield {"audio_base64": "UklGRg==", "format": "wav", "generation": revision}
+            await asyncio.sleep(60)
+        finally:
+            cancelled.append(revision)
+    app = create_voice_app(signing_secret=SECRET, allowed_origins={ORIGIN},
+                           shopping_turn_handler=turn_handler, shopping_tts_handler=tts)
+    with TestClient(app).websocket_connect(f"/ws/voice/{SHOP}", headers={"origin": ORIGIN}) as ws:
+        ws.send_json({"type": "authenticate", "grant": make_signed_grant()})
+        ws.receive_json()
+        for revision in (1, 2):
+            ws.send_json({"type": "shopping_turn", "turn_id": f"t{revision}",
+                          "request_revision": revision, "page_epoch": 1, "transcript": "Hello"})
+            assert ws.receive_json()["type"] == "shopping_result"
+            audio = ws.receive_json()
+            assert audio["type"] == "shopping_tts"
+            assert audio["request_revision"] == revision
+        assert 1 in cancelled
 
 
 def test_slow_tts_does_not_block_the_next_shopping_turn():

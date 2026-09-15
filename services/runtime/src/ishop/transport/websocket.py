@@ -157,14 +157,25 @@ def create_voice_app(
         grant: SessionGrant | None = None
         pending_commands: dict[str, dict[str, Any]] = {}
         tts_tasks: set[asyncio.Task[None]] = set()
+        latest_shopping_revision = 0
+        payload: dict[str, Any] = {}
+
+        async def _send_error(socket: WebSocket, code: str) -> None:
+            shopping = payload.get("type") == "shopping_turn"
+            await socket.send_json({
+                "type": "error", "error_code": code, "authorizes_interpretation": False,
+                "request_revision": payload.get("request_revision") if shopping else revision,
+                "turn_id": payload.get("turn_id") if shopping else None,
+                "source": "shopping" if shopping else "speech",
+            })
 
         async def deliver_tts(result: dict[str, Any], payload: dict[str, Any]) -> None:
             try:
-                chunks = await shopping_tts_handler(  # type: ignore[misc]
+                output = shopping_tts_handler(  # type: ignore[misc]
                     str(result["spoken_response"]),
                     int(payload["request_revision"]),
                 )
-                if chunks:
+                async def send_chunks(chunks):
                     await websocket.send_json({
                         "type": "shopping_tts",
                         "turn_id": payload["turn_id"],
@@ -172,10 +183,20 @@ def create_voice_app(
                         "page_epoch": payload["page_epoch"],
                         "tts_audio_chunks": chunks,
                     })
+                if hasattr(output, "__aiter__"):
+                    async for chunk in output:
+                        await send_chunks([chunk])
+                else:
+                    chunks = await output
+                    if chunks:
+                        await send_chunks(chunks)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning("TTS synthesis failed or timed out; text result delivered safely", exc_info=True)
+            except Exception as exc:
+                logger.warning("TTS unavailable turn=%s revision=%s error_type=%s",
+                               payload["turn_id"], payload["request_revision"], type(exc).__name__)
+                await websocket.send_json({"type": "tts_unavailable", "turn_id": payload["turn_id"],
+                    "request_revision": payload["request_revision"], "page_epoch": payload["page_epoch"]})
 
         def cancel_pending_tts() -> None:
             for task in tuple(tts_tasks):
@@ -301,6 +322,9 @@ def create_voice_app(
                         session = None
                     await websocket.send_json({"type": "turn_canceled", "revision": revision})
                 elif action == "shopping_turn":
+                    if isinstance(payload.get("request_revision"), int) and payload["request_revision"] > latest_shopping_revision:
+                        cancel_pending_tts()
+                        latest_shopping_revision = payload["request_revision"]
                     if shopping_turn_handler is None:
                         await _send_error(websocket, "shopping_runtime_unavailable")
                         continue
@@ -466,6 +490,12 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
                 raise ValueError(f"Invalid {field_name}")
             if field_val.get("shop_id") != grant.shop_id:
                 raise ValueError(f"{field_name} shop mismatch")
+            if field_name == "current_cart" and "display_lines" in field_val:
+                details = field_val["display_lines"]
+                if (not isinstance(details, list) or len(details) > 100
+                        or any(not isinstance(entry, dict) for entry in details)
+                        or len(json.dumps(details)) > 100_000):
+                    raise ValueError("Invalid cart presentation observation")
     page_context = payload.get("page_context")
     if page_context is not None:
         if not isinstance(page_context, dict) or set(page_context) - {"page_id", "path", "previous_path", "product_id", "variant_id", "observed_at_ms"}:

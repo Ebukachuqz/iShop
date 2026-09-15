@@ -15,6 +15,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from email.utils import parsedate_to_datetime
 
 from ishop.domain.intent import ShoppingIntent, TurnDecision
 from ishop.llm.base import (
@@ -70,6 +71,7 @@ class GroqLlmProvider(LlmProvider):
         disabled_reason = None if enabled else "Missing or unconfigured GROQ_API_KEY"
 
         self._api_key = key
+        self._cooldown_until = 0.0
         self._model_name = model
         self._profile = LlmProfile(
             profile_id=profile_id,
@@ -93,6 +95,7 @@ class GroqLlmProvider(LlmProvider):
         return (True, None)
 
     async def interpret_intent(self, request: LlmIntentRequest) -> LlmInterpretationResult:
+        self._check_cooldown()
         if not self._profile.enabled or not self._api_key:
             raise LlmProviderError(
                 message=f"Groq provider is disabled: {self._profile.disabled_reason}",
@@ -136,6 +139,8 @@ class GroqLlmProvider(LlmProvider):
             )
             res_json = json.loads(resp_body)
         except urllib.error.HTTPError as e:
+            if e.code == 429:
+                self._set_cooldown(e)
             err_msg = e.read().decode("utf-8", errors="replace")
             raise LlmProviderError(
                 message=f"Groq API HTTP {e.code}: {err_msg}",
@@ -193,6 +198,7 @@ class GroqLlmProvider(LlmProvider):
         )
 
     async def select_tool(self, request: LlmToolSelectionRequest) -> LlmToolSelectionResult:
+        self._check_cooldown()
         if not self._profile.enabled or not self._api_key:
             raise LlmProviderError("Groq tool selection is unavailable", self.profile.profile_id)
         tools_json = json.dumps(list(request.qualified_tools), separators=(",", ":"))
@@ -229,8 +235,33 @@ class GroqLlmProvider(LlmProvider):
             if name not in allowed:
                 raise ValueError("tool is not qualified")
             return LlmToolSelectionResult(name, arguments, str(data.get("rationale", "")), raw)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                self._set_cooldown(exc)
+            raise LlmProviderError(
+                "Reasoning tool selection service unavailable", self.profile.profile_id,
+                status_code=exc.code, retryable=exc.code in (429, 500, 503), cause=exc,
+            ) from exc
         except Exception as exc:
             raise LlmProviderError(f"Failed to select a qualified tool: {exc}", self.profile.profile_id, retryable=True, cause=exc) from exc
+
+    def _set_cooldown(self, error: urllib.error.HTTPError) -> None:
+        value = error.headers.get("Retry-After", "30") if error.headers else "30"
+        try:
+            delay = max(1.0, float(value))
+        except (ValueError, TypeError):
+            try:
+                delay = max(1.0, parsedate_to_datetime(value).timestamp() - time.time())
+            except (ValueError, TypeError, OverflowError):
+                delay = 30.0
+        self._cooldown_until = time.monotonic() + delay
+
+    def _check_cooldown(self) -> None:
+        if time.monotonic() < self._cooldown_until:
+            raise LlmProviderError(
+                "Reasoning provider cooldown is active", self.profile.profile_id,
+                status_code=429, retryable=False,
+            )
 
     async def generate_grounded_response(self, context: GroundedResponseContext) -> str:
         if not self._profile.enabled or not self._api_key:

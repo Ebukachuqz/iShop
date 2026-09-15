@@ -13,13 +13,22 @@ def _empty():
 
 def test_browse_store_uses_browser_observation_on_same_persisted_turn():
     evidence, cart = _empty()
-    controller = ShoppingController(FakeLlmProvider())
+    class CountingProvider(FakeLlmProvider):
+        selections = 0
+        async def select_tool(self, request):
+            self.selections += 1
+            return await super().select_tool(request)
+    provider = CountingProvider()
+    controller = ShoppingController(provider)
     first = asyncio.run(controller.handle_turn(
         "sess", "turn", 1, 1, "Browse the store collections", evidence, cart,
         available_tools={"browse_store"},
     ))
     assert first.status == "tool_required"
     assert first.tool_request == {"name": "browse_store", "arguments": {"mode": "list_collections", "limit": 8}}
+    restored = ShoppingController(provider)
+    restored.restore_session_state(controller.export_session_state("sess"))
+    controller = restored
     second = asyncio.run(controller.handle_turn(
         "sess", "turn", 1, 1, "Browse the store collections", evidence, cart,
         available_tools={"browse_store"},
@@ -30,6 +39,7 @@ def test_browse_store_uses_browser_observation_on_same_persisted_turn():
     assert second.status == "completed"
     assert "Snow" in second.spoken_response
     assert len(controller.get_session_state("sess").tool_observations) == 1
+    assert provider.selections == 1
 
 
 def test_policy_observation_is_attributed_and_store_instructions_are_not_followed():

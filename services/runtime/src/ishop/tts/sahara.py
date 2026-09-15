@@ -145,7 +145,11 @@ class SaharaTtsProvider(TtsProvider):
             {"Authorization": f"Bearer {self._api_key}"},
         )
         session = SaharaTtsSession(socket, text, generation)
-        await session.begin()
+        try:
+            await session.begin()
+        except BaseException:
+            await session.cancel()
+            raise
         return session
 
 

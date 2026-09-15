@@ -9,7 +9,7 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const source = readFileSync(join(here, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'assets', 'drake-voice.js'), 'utf8');
 const widgetSource = readFileSync(join(here, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'assets', 'drake-widget.js'), 'utf8');
 
-function loadVoice() {
+function loadVoice(AudioOverride = null) {
   const window = {};
   class FakeAudio {
     constructor(src) {
@@ -28,7 +28,7 @@ function loadVoice() {
     document: { getElementById: () => null },
     URL: MockURL,
     Blob,
-    Audio: FakeAudio,
+    Audio: AudioOverride || FakeAudio,
     AudioBuffer: undefined,
   });
   return window.IShopVoiceSession;
@@ -202,6 +202,32 @@ test('audio playback interrupts previous generation and rejects obsolete chunks'
 
   const freshChunk = { generation: 1, audio: new Uint8Array(16).buffer, format: 'wav' };
   assert.equal(playback.enqueue(freshChunk), true);
+});
+
+test('blocked audio can be replayed and obsolete callbacks cannot disrupt a newer reply', async () => {
+  const audios = [];
+  let blocked = true;
+  class Audio {
+    constructor(src) { this.src = src; audios.push(this); }
+    pause() {}
+    play() { return blocked ? Promise.reject({ name: 'NotAllowedError' }) : Promise.resolve(); }
+  }
+  const statuses = [];
+  const playback = new (loadVoice(Audio).AudioPlayback)({ onStatus: (status) => statuses.push(status) });
+  playback.enqueue({ generation: 0, audio: new ArrayBuffer(16), format: 'wav' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(statuses.at(-1), 'blocked');
+  assert.equal(playback.queue.length, 1);
+  blocked = false;
+  playback.retry();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(statuses.at(-1), 'speaking');
+  const obsoleteEnd = audios.at(-1).onended;
+  playback.interrupt();
+  playback.enqueue({ generation: 1, audio: new ArrayBuffer(16), format: 'wav' });
+  const current = playback.active;
+  obsoleteEnd();
+  assert.equal(playback.active, current);
 });
 
 test('voice client drops events with stale revisions and duplicate finals', async () => {

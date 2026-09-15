@@ -85,7 +85,11 @@
       this.currentProductHandle = null;
       this.candidates = new CandidateSet([]);
       this.capture = null;
-      this.playback = voice ? new voice.AudioPlayback() : null;
+      this.playback = voice ? new voice.AudioPlayback({ onStatus: (status) => {
+        if (!this.audioStatus) return;
+        this.audioStatus.textContent = { speaking: "Drake is speaking", blocked: "Press Play reply to hear Drake", unavailable: "Audio unavailable. Your reply is shown above.", idle: "" }[status] || "";
+        this.playButton.hidden = status !== "blocked";
+      } }) : null;
       this.pendingTranscript = "";
       this.pendingCatalogProducts = [];
       this.pendingCatalogQuery = null;
@@ -199,6 +203,20 @@
       this.stopButton.type = "button";
       this.stopButton.hidden = true;
       controls.append(this.micButton, this.stopButton);
+      this.audioStatus = element("p", "drake-audio-status");
+      this.audioStatus.setAttribute("role", "status");
+      this.playButton = element("button", "drake-play", "Play reply");
+      this.playButton.type = "button";
+      this.playButton.hidden = true;
+      this.playButton.addEventListener("click", () => this.playback?.retry());
+      this.editVoiceButton = element("button", "drake-edit-voice", "Edit last voice request");
+      this.editVoiceButton.type = "button";
+      this.editVoiceButton.hidden = true;
+      this.editVoiceButton.addEventListener("click", () => {
+        this.textInput.value = this.lastVoiceTranscript || "";
+        this.textInput.focus();
+      });
+      controls.append(this.audioStatus, this.playButton, this.editVoiceButton);
       this.panel.append(header, this.status, this.conversation, form, controls, element("p", "drake-privacy", "Your microphone starts only when you press Start speaking."));
       this.root.replaceChildren(this.launcher, this.panel);
     }
@@ -280,6 +298,7 @@
     async submitText() {
       const text = this.textInput.value.trim();
       if (!text) return;
+      if (this.playback) this.playback.interrupt();
       this.textInput.value = "";
       this.addMessage("shopper", text);
       this.state.acceptFinal(text);
@@ -290,17 +309,23 @@
         this.state.setPartial(event.text);
         this.caption.textContent = event.text || "";
       } else if (event.type === "final_transcript") {
+        this.lastVoiceTranscript = event.text || "";
+        if (this.editVoiceButton) this.editVoiceButton.hidden = false;
         this.state.acceptFinal(event.text);
         this.caption.textContent = "";
         this.addMessage("shopper", event.text || "");
         this.submitShoppingRequest(event.text || "");
       } else if (event.type === "error") {
+        if (event.request_revision != null && Number(event.request_revision) !== Number(this.client?.revision)) return;
         const messages = {
           invalid_shopping_turn: "I couldn’t validate the store information for that request.",
           shopping_runtime_failed: "The shopping service failed while processing that request.",
           provider_start_failed: "The speech service could not start. Please try again.",
           provider_stream_failed: "The speech service did not finish transcribing. Please try again.",
           incompatible_runtime: "Drake was updated. Please refresh this page to reconnect safely.",
+          RESOURCE_EXHAUSTED: "The speech service is busy. Please wait or type your request.",
+          QUOTA_EXCEEDED: "The speech service limit has been reached. You can still type.",
+          INSUFFICIENT_AUDIO_ACTIVITY: "I didn’t hear enough speech. Please try again or type.",
         };
         this.setState("failed", { error: messages[event.error_code] || "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
@@ -342,6 +367,9 @@
           this.setState("ready");
           this.pendingTurn = null;
         }
+      } else if (event.type === "tts_unavailable") {
+        if (Number(event.request_revision) !== Number(this.client?.revision) || Number(event.page_epoch) !== Number(this.pageEpoch)) return;
+        this.audioStatus.textContent = "Audio unavailable. Your reply is shown above.";
       } else if (event.type === "shopping_tts") {
         if (!this.client || Number(event.request_revision) !== Number(this.client.revision) || Number(event.page_epoch) !== Number(this.pageEpoch)) return;
         this.playTts(event.tts_audio_chunks);
@@ -525,12 +553,9 @@
         if (includeStoreContext) {
           try {
             currentCart = await this.bridge.readAuthoritativeCart();
+            if (typeof this.bridge.describeCart === "function") currentCart = await this.bridge.describeCart(currentCart);
           } catch (_) {
-            currentCart = {
-              shop_id: this.root.dataset.shopDomain || location.host,
-              currency: window.Shopify?.currency?.active || "USD",
-              lines: [],
-            };
+            throw new Error("authoritative_cart_unavailable");
           }
         }
         let bridgeTools = [];

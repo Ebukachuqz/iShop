@@ -90,6 +90,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
                 available_tools=set(payload.get("available_tools") or []),
                 tool_observation=payload.get("tool_observation"),
                 context_phase=payload.get("context_phase", "action"),
+                cart_details=(cart_raw or {}).get("display_lines", []),
             )
             controller.record_assistant_outcome(session_id, result)
             session_store.save(session_id, controller.export_session_state(session_id))
@@ -126,21 +127,18 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             }
         return response
 
-    async def synthesize_shopping_text(text: str, revision: int) -> list[dict[str, Any]]:
+    async def synthesize_shopping_text(text: str, revision: int):
+        tts_session = None
         try:
-            tts_session = await asyncio.wait_for(tts_provider.synthesize(text, generation=revision), timeout=8)
-            chunks: list[dict[str, Any]] = []
-            async for chunk in tts_session.chunks():
-                chunks.append({"audio_base64": base64.b64encode(chunk.audio).decode("ascii"),
-                    "generation": chunk.generation, "sample_rate": chunk.sample_rate,
-                    "channels": chunk.channels, "format": chunk.format})
-            return chunks
-        except Exception:
-            logger.warning(
-                "Sahara TTS synthesis failed; delivering the text response without audio",
-                exc_info=True,
-            )
-            return []
+            async with asyncio.timeout(45):
+                tts_session = await asyncio.wait_for(tts_provider.synthesize(text, generation=revision), timeout=8)
+                async for chunk in tts_session.chunks():
+                    yield {"audio_base64": base64.b64encode(chunk.audio).decode("ascii"),
+                        "generation": chunk.generation, "sample_rate": chunk.sample_rate,
+                        "channels": chunk.channels, "format": chunk.format}
+        finally:
+            if tts_session is not None:
+                await tts_session.cancel()
 
     app = create_voice_app(
         signing_secret=active.signing_secret,

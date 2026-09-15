@@ -27,9 +27,7 @@ from ishop.commerce.catalog import (
     EvidenceSnapshot,
     IntentTarget,
     ProductEvidence,
-    ResolutionResult,
     ResolutionStatus,
-    VariantEvidence,
     product_title_matches,
 )
 from ishop.commerce.reconciler import (
@@ -42,17 +40,15 @@ from ishop.commerce.verifier import (
     CartVerifier,
     ProposedCartAction,
     QuantityOperation,
-    VerificationOutcome,
 )
 from ishop.domain.intent import (
     BudgetConstraint,
     DecisionMode,
     IntentOperation,
-    QuantityChange,
     ReferenceKind,
     ResponsePurpose,
     ShoppingIntent,
-    TurnDecision,
+    TargetReference,
 )
 from ishop.domain.models import (
     AuthorizedCommand,
@@ -62,12 +58,12 @@ from ishop.domain.models import (
     Money,
 )
 from ishop.llm.base import (
-    GroundedResponseContext,
     LlmIntentRequest,
     LlmInterpretationResult,
     LlmProvider,
     LlmProviderError,
     LlmToolSelectionRequest,
+    LlmToolSelectionResult,
     tool_arguments_for_intent,
 )
 from ishop.tools.registry import ToolProposal, ToolRegistry
@@ -286,13 +282,14 @@ class ShoppingController:
         transcript: str,
         evidence: EvidenceSnapshot,
         current_cart: CartSnapshot,
-        client: ShopifyClient | None = None,
+        client: ShopifySimulator | None = None,
         current_product_id: str | None = None,
         page_context: dict[str, Any] | None = None,
         available_tools: set[str] | None = None,
         tool_observation: dict[str, Any] | None = None,
         context_phase: str = "action",
         now_ms: int | None = None,
+        cart_details: list[dict[str, Any]] | None = None,
     ) -> ControllerTurnResult:
         """Handle an accepted final transcript through LLM reasoning, resolution, and execution."""
         now = now_ms if now_ms is not None else int(time.time() * 1000)
@@ -418,14 +415,13 @@ class ShoppingController:
                     failure_code = "invalid_decision"
                     break
             if not intent_result:
-                err_reason = str(last_err) if last_err else "Failed to parse structured intent"
                 logger.warning(
                     "Shopping interpretation failed code=%s profile=%s turn=%s revision=%s detail=%s",
                     failure_code,
                     self.llm_provider.profile.profile_id,
                     turn_id,
                     request_revision,
-                    err_reason[:500],
+                    type(last_err).__name__,
                 )
                 shopper_message = {
                     "reasoning_rate_limited": "I’m receiving too many requests right now. Please wait a moment and try again.",
@@ -512,6 +508,48 @@ class ShoppingController:
             )
 
         lower_transcript = transcript.casefold()
+
+        pending_cart_choices = sess.continuation_state.pop("cart_detail_choices", None)
+        cart_choice = re.fullmatch(r"(?:the )?(first|second|third|[1-9][0-9]*)(?: one| item)?[.!]?", lower_transcript.strip())
+        if pending_cart_choices and cart_choice:
+            word = cart_choice.group(1)
+            position = {"first": 1, "second": 2, "third": 3}.get(word, int(word) if word.isdigit() else 0)
+            if 1 <= position <= len(pending_cart_choices):
+                intent = replace(intent, operation=IntentOperation.VIEW_CART,
+                    target_reference=TargetReference(kind=ReferenceKind.CART_LINE, value=pending_cart_choices[position - 1]))
+
+        # Presentation observations never participate in cart fingerprints or writes.
+        details = []
+        for entry in (cart_details or [])[:100]:
+            if not isinstance(entry, dict):
+                continue
+            line = next((line for line in current_cart.lines
+                         if str(entry.get("line_key")) == line.shopify_line_key
+                         and str(entry.get("variant_id")) == line.variant_id
+                         and entry.get("quantity") == line.quantity), None)
+            if line is not None:
+                details.append(entry)
+        if intent.target_reference and intent.target_reference.kind == ReferenceKind.CART_LINE:
+            ref = intent.target_reference
+            matches = [entry for entry in details if str(entry.get("line_key")) == ref.value]
+            if not matches and ref.position is not None and 1 <= ref.position <= len(details):
+                matches = [details[ref.position - 1]]
+            if not matches and len(details) == 1 and not pending_cart_choices and ref.position is None:
+                matches = details
+            if not matches and pending_cart_choices:
+                return ControllerTurnResult(
+                    session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                    "That cart item has changed or is no longer available. Please ask to see the current cart.", intent)
+            if intent.operation in {IntentOperation.DESCRIBE_PRODUCT, IntentOperation.VIEW_CART}:
+                if len(matches) != 1 and len(current_cart.lines) > 1:
+                    sess.continuation_state["cart_detail_choices"] = [entry["line_key"] for entry in details]
+                    return ControllerTurnResult(
+                        session_id, turn_id, request_revision, page_epoch, "clarification_needed",
+                        "Which cart item would you like details for? " + " ".join(
+                            f"{index}. {entry.get('title', 'Item')}" for index, entry in enumerate(details, 1)),
+                        intent, clarification_fields=("cart_line",))
+                details = matches or details
+                intent = replace(intent, operation=IntentOperation.VIEW_CART, unresolved_fields=())
 
         # Resolve provider-proposed typed references from trusted session/page state.
         # The model proposes the reference kind; deterministic state owns identity.
@@ -682,7 +720,8 @@ class ShoppingController:
         )
         refers_to_earlier_search = any(phrase in lower_transcript for phrase in ("earlier search", "previous search", "first search"))
 
-        if ordinal is not None and not is_comparison_turn:
+        if (ordinal is not None and not is_comparison_turn
+                and not (intent.target_reference and intent.target_reference.kind == ReferenceKind.CART_LINE)):
             product_ids = sess.active_search_product_ids
             if refers_to_earlier_search:
                 historical_sets = [
@@ -951,7 +990,14 @@ class ShoppingController:
         )
         for _attempt in range(2):
             try:
-                selection = await self.llm_provider.select_tool(selection_request)
+                saved_selection = sess.continuation_state.get("selected_tool")
+                if (tool_observation is not None and saved_selection
+                        and saved_selection.get("turn_id") == turn_id
+                        and saved_selection.get("revision") == request_revision):
+                    selection = LlmToolSelectionResult(
+                        saved_selection["name"], saved_selection["arguments"], "Resumed validated step", "")
+                else:
+                    selection = await self.llm_provider.select_tool(selection_request)
                 if selection.tool_name not in expected_tools[intent.operation]:
                     raise ValueError("selected tool does not match the validated shopping intent")
                 proposal = self.tool_registry.hydrate_and_validate(
@@ -962,6 +1008,11 @@ class ShoppingController:
                 break
             except (LlmProviderError, ValueError, KeyError) as exc:
                 selection_error = exc
+                if isinstance(exc, LlmProviderError) and exc.status_code == 429:
+                    return ControllerTurnResult(
+                        session_id, turn_id, request_revision, page_epoch, "error",
+                        "My reasoning service is temporarily rate limited. Please wait before trying again.",
+                        intent, failure_code="reasoning_rate_limited")
                 selection_request = replace(selection_request, validation_feedback=str(exc))
                 selection = None
                 proposal = None
@@ -972,7 +1023,7 @@ class ShoppingController:
                 turn_id,
                 request_revision,
                 intent.operation.value,
-                str(selection_error)[:500],
+                type(selection_error).__name__,
             )
             return ControllerTurnResult(
                 session_id=session_id, turn_id=turn_id,
@@ -1038,6 +1089,10 @@ class ShoppingController:
         }
         needs_browser_read = selection.tool_name in read_tools and not read_satisfied[selection.tool_name]
         if needs_browser_read:
+            sess.continuation_state["selected_tool"] = {
+                "turn_id": turn_id, "revision": request_revision,
+                "name": selection.tool_name, "arguments": dict(proposal.arguments),
+            }
             sess.pending_intents[pending_key] = intent
             return ControllerTurnResult(
                 session_id, turn_id, request_revision, page_epoch,
@@ -1104,7 +1159,7 @@ class ShoppingController:
 
         elif intent.operation == IntentOperation.VIEW_CART:
             return replace(self._handle_view_cart(
-                session_id, turn_id, request_revision, page_epoch, intent, current_cart
+                session_id, turn_id, request_revision, page_epoch, intent, current_cart, details
             ), selected_tool=selection.tool_name)
 
         elif intent.operation in (
@@ -1524,6 +1579,7 @@ class ShoppingController:
         page_epoch: int,
         intent: ShoppingIntent,
         current_cart: CartSnapshot,
+        details: list[dict[str, Any]] | None = None,
     ) -> ControllerTurnResult:
         total_items = sum(l.quantity for l in current_cart.lines)
         lower_span = f"{intent.supporting_transcript_span} {intent.original_language_wording}".casefold()
@@ -1552,7 +1608,21 @@ class ShoppingController:
                 authorized_command=command,
             )
 
-        resp = f"You have {total_items} items in your cart across {len(current_cart.lines)} line(s)."
+        resp = f"You have {total_items} {'item' if total_items == 1 else 'items'} in your cart."
+        for index, entry in enumerate(details or [], 1):
+            title = str(entry.get("title", "Item"))[:200]
+            variant = str(entry.get("variant_title", ""))[:100]
+            resp += f" {index}. {title}"
+            if variant and variant not in {"Default Title", "Title"}:
+                resp += f" ({variant})"
+            resp += f", quantity {entry['quantity']}"
+            for price_field, label in (("unit_price_minor", "each"), ("line_total_minor", "line total")):
+                amount = entry.get(price_field)
+                if type(amount) is int and amount >= 0:
+                    resp += f", {Money.from_minor_units(amount, current_cart.currency)} {label}"
+            resp += "."
+        if not details:
+            resp += " Product details are unavailable from this cart observation."
         return ControllerTurnResult(
             session_id=session_id,
             turn_id=turn_id,
@@ -1573,7 +1643,7 @@ class ShoppingController:
         intent: ShoppingIntent,
         evidence: EvidenceSnapshot,
         current_cart: CartSnapshot,
-        client: ShopifyClient | None,
+        client: ShopifySimulator | None,
         now_ms: int,
     ) -> ControllerTurnResult:
         # Check if product is unresolved or missing (T-03, T-06)

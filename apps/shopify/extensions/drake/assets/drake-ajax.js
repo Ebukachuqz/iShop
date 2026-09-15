@@ -124,6 +124,18 @@ export class AjaxCartAdapter {
       shop_id: resolvedShopId,
       currency: ajaxResponse.currency || 'USD',
       lines: lines,
+      ...(ajaxResponse.items?.some((item) => item.product_title) ? {
+        display_lines: ajaxResponse.items.map((item) => ({
+          line_key: String(item.key || item.id),
+          variant_id: String(item.variant_id || item.id),
+          product_id: String(item.product_id || ''),
+          title: String(item.product_title || ''),
+          variant_title: String(item.variant_title || ''),
+          quantity: Number(item.quantity || 0),
+          unit_price_minor: item.final_price ?? item.price,
+          line_total_minor: item.final_line_price ?? item.line_price,
+        })),
+      } : {}),
     };
   }
 }

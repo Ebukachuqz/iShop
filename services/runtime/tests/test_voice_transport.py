@@ -322,6 +322,9 @@ def test_provider_start_failure_is_truthful_and_non_authorizing():
         "type": "error",
         "error_code": "provider_start_failed",
         "authorizes_interpretation": False,
+        "request_revision": 1,
+        "turn_id": None,
+        "source": "speech",
     }
 
 

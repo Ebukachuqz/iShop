@@ -8,6 +8,16 @@ import { WebMcpAdapter } from '../../../apps/shopify/extensions/drake/src/bridge
 import { StorefrontBridge } from '../../../apps/shopify/extensions/drake/src/bridge/bridge.js';
 
 describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
+  test('cart presentation uses matching observed line keys and rejects a changed cart', async () => {
+    const cart = { shop_id: 'shop', currency: 'USD', lines: [{ variant_id: 'v1', quantity: 1, line_key: 'mcp-key' }] };
+    const observed = { ...cart, lines: [{ ...cart.lines[0], line_key: 'ajax-key' }],
+      display_lines: [{ line_key: 'ajax-key', variant_id: 'v1', title: 'Snowboard', quantity: 1 }] };
+    const bridge = new StorefrontBridge({ ajaxAdapter: { readCart: async () => observed } });
+    assert.equal(await bridge.describeCart(cart), observed);
+    assert.equal(await cartFingerprint(cart), await cartFingerprint(observed));
+    observed.lines[0].quantity = 2;
+    assert.equal(await bridge.describeCart(cart), cart);
+  });
   test('binds WebMCP cart evidence to the trusted storefront shop', () => {
     const adapter = new WebMcpAdapter(null, 'trusted-shop.myshopify.com');
     const cart = adapter.normalizeCart({ shop_id: 'store.myshopify.com', currency: 'USD', lines: [] });

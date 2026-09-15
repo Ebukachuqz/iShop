@@ -157,6 +157,7 @@ try {
   check(cart.items[0].quantity, 2, 'absolute quantity');
   await submit('Show cart');
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('2 items')"), true, 'authoritative cart read');
+  check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('Complete Snowboard (Ice), quantity 2, 699.95 USD each, 1399.90 USD line total')"), true, 'cart detail observation survives widget, transport, and controller');
   await submit('Remove the Ice Complete Snowboard from my cart', 'completed');
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(cart.items.length, 0, 'line removal');
