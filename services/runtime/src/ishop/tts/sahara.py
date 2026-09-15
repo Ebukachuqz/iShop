@@ -144,7 +144,7 @@ class SaharaTtsProvider(TtsProvider):
         self,
         api_key: str | None = None,
         *,
-        language: str = "en",
+        language: str = "pcm",
         accent: str = "pidgin",
         gender: str = "female",
         output_format: str = "wav",

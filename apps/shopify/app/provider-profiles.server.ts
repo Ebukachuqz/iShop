@@ -102,7 +102,7 @@ export function providerProfiles(): ProviderProfile[] {
       label: "Sahara female Pidgin-English voice",
       mode: "Sahara streaming Pidgin voice",
       enabled: verifiedProvider("SAHARA_API_KEY", "ISHOP_ENABLE_SAHARA_PIDGIN_TTS"),
-      disabledReason: "Sahara female Pidgin TTS tuple has not been explicitly verified",
+      disabledReason: "Sahara female Pidgin TTS requires its API key and feature flag",
     },
     {
       id: "sahara-tts-female-pcm",
@@ -110,7 +110,7 @@ export function providerProfiles(): ProviderProfile[] {
       label: "Drake female voice (legacy)",
       mode: "Sahara female voice (migrates to Pidgin)",
       enabled: verifiedProvider("SAHARA_API_KEY", "ISHOP_ENABLE_SAHARA_PIDGIN_TTS"),
-      disabledReason: "Legacy voice requires the verified Sahara female Pidgin TTS tuple",
+      disabledReason: "Legacy voice requires the Sahara API key and Pidgin TTS feature flag",
     },
     {
       id: "elevenlabs-tts-female-stream",
