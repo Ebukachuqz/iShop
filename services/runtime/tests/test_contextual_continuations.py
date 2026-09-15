@@ -237,6 +237,50 @@ def test_cs02_cs03_target_lookup_and_invalid_product(four_item_evidence, empty_c
     assert res_missing.status in ("clarification_needed", "completed", "evidence_required")
 
 
+def test_named_navigation_requests_background_product_lookup_then_resumes(four_item_evidence, empty_cart):
+    """A product-page objective must never degrade into visible catalog search."""
+    provider = FakeLlmProvider()
+    transcript = "open the page of the complete snowboard"
+    provider.register_custom_intent(transcript, ShoppingIntent(
+        intent_id="intent_named_navigation",
+        operation=IntentOperation.NAVIGATE,
+        product_query="The Complete Snowboard",
+        is_explicit_checkout_request=False,
+        supporting_transcript_span=transcript,
+    ))
+    controller = ShoppingController(llm_provider=provider)
+    empty_evidence = replace(four_item_evidence, products={}, query=None)
+
+    lookup = asyncio.run(controller.handle_turn(
+        "sess_named_navigation", "turn_named_navigation", 1, 1,
+        transcript, empty_evidence, empty_cart,
+    ))
+    assert lookup.status == "evidence_required"
+    assert lookup.selected_tool == "get_product"
+    assert lookup.tool_request == {
+        "name": "get_product",
+        "arguments": {"product_reference": "The Complete Snowboard"},
+    }
+
+    target = next(iter(four_item_evidence.products.values()))
+    target = replace(target, title="The Complete Snowboard", url="/products/the-complete-snowboard")
+    resolved_evidence = replace(
+        four_item_evidence,
+        query="The Complete Snowboard",
+        products={target.product_id: target},
+    )
+    opened = asyncio.run(controller.handle_turn(
+        "sess_named_navigation", "turn_named_navigation", 1, 1,
+        transcript, resolved_evidence, empty_cart,
+        tool_observation={
+            "tool": "get_product", "ok": True, "source": "storefront_product",
+            "data": {"coverage": "exact"}, "observed_at_ms": 1000,
+        },
+    ))
+    assert opened.authorized_command is not None
+    assert opened.authorized_command.parameters["url"] == "/products/the-complete-snowboard"
+
+
 def test_cs04_ordinal_bounds(four_item_evidence, empty_cart):
     """CS-04: Out-of-bounds ordinals trigger clarification instead of guessing."""
     controller = ShoppingController(llm_provider=FakeLlmProvider())

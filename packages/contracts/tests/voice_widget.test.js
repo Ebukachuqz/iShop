@@ -194,6 +194,10 @@ test('widget renders untrusted shopper and store text without HTML insertion', (
   assert.match(widgetSource, /shopping service failed while processing/);
   assert.match(widgetSource, /Start conversation/);
   assert.match(widgetSource, /End conversation/);
+  assert.match(widgetSource, /Correct transcript/);
+  assert.doesNotMatch(widgetSource, /event\.selected_tool \|\| "search_catalog"/);
+  assert.match(widgetSource, /Here are the store’s search results/);
+  assert.match(widgetSource, /offerConversationResume/);
 });
 
 test('widget uses decision-first ingress before collecting store context', () => {

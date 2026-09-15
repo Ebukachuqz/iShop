@@ -102,6 +102,7 @@
       this.historyKey = `ishop:messages:${root.dataset.shopDomain || location.host}`;
       this.revisionKey = `ishop:revision:${root.dataset.shopDomain || location.host}`;
       this.nativeSearchKey = `ishop:native-search:${root.dataset.shopDomain || location.host}`;
+      this.conversationResumeKey = `ishop:continuous-resume:${root.dataset.shopDomain || location.host}`;
       this.lastRevision = 0;
       this.pageEpoch = 1;
       this.pageContext = null;
@@ -218,13 +219,14 @@
       this.playButton.type = "button";
       this.playButton.hidden = true;
       this.playButton.addEventListener("click", () => this.playback?.retry());
-      this.editVoiceButton = element("button", "drake-edit-voice", "Edit last voice request");
+      this.editVoiceButton = element("button", "drake-edit-voice", "Correct transcript");
       this.editVoiceButton.type = "button";
       this.editVoiceButton.hidden = true;
       this.editVoiceButton.addEventListener("click", () => {
         this.textInput.value = this.lastVoiceTranscript || "";
         this.textInput.focus();
       });
+      this.editVoiceButton.title = "Edit the recognized words, then send a new request";
       controls.append(this.audioStatus, this.playButton, this.editVoiceButton);
       this.privacy = element("p", "drake-privacy", "Your microphone starts only when you press Start speaking or Start conversation.");
       this.panel.append(header, this.status, this.conversation, form, controls, this.privacy);
@@ -238,7 +240,7 @@
       this.conversationButton.addEventListener("click", () => this.startConversation());
       this.endConversationButton.addEventListener("click", () => this.endConversation());
       if (typeof document.addEventListener === "function") document.addEventListener("visibilitychange", () => {
-        if (document.hidden && this.continuousMode) this.endConversation("Conversation paused because this tab is hidden.");
+        if (document.hidden && this.continuousMode && !this.navigationInProgress) this.endConversation("Conversation paused because this tab is hidden.");
       });
       this.panel.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); this.submitText(); });
     }
@@ -273,6 +275,7 @@
           onChunk: (chunk) => this.sendContinuousAudio(chunk),
         });
         await this.capture.start();
+        try { sessionStorage.setItem(this.conversationResumeKey, "requested"); } catch (_) {}
         this.micButton.hidden = true; this.stopButton.hidden = true;
         this.conversationButton.hidden = true; this.endConversationButton.hidden = false;
         this.privacy.textContent = "Conversation microphone is on. Drake sends audio only after speech is detected.";
@@ -326,6 +329,7 @@
       this.capture = null; this.continuousMode = false; this.continuousTurn = null; this.continuousAudioQueue = [];
       if (this.client) this.client.cancelTurn();
       if (this.playback) this.playback.interrupt();
+      try { sessionStorage.removeItem(this.conversationResumeKey); } catch (_) {}
       this.micButton.hidden = false; this.stopButton.hidden = true;
       this.conversationButton.hidden = false; this.endConversationButton.hidden = true;
       this.privacy.textContent = message || "Your microphone starts only when you press Start speaking or Start conversation.";
@@ -429,7 +433,7 @@
             event.evidence_query,
             event.turn_id,
             event.request_revision,
-            event.selected_tool || "search_catalog",
+            event.selected_tool,
             event.tool_request,
           );
           return;
@@ -457,7 +461,11 @@
         }
       } else if (event.type === "tts_unavailable") {
         if (Number(event.request_revision) !== Number(this.client?.revision) || Number(event.page_epoch) !== Number(this.pageEpoch)) return;
-        this.audioStatus.textContent = "Audio unavailable. Your reply is shown above.";
+        console.warn('[Drake] Spoken reply unavailable:', event.failure_code || 'unknown');
+        this.audioStatus.textContent = event.retryable
+          ? "The voice service is temporarily unavailable. Your text reply is shown above."
+          : "Spoken reply unavailable from the selected voice. Your text reply is shown above.";
+        this.playButton.hidden = true;
       } else if (event.type === "shopping_tts") {
         if (!this.client || Number(event.request_revision) !== Number(this.client.revision) || Number(event.page_epoch) !== Number(this.pageEpoch)) return;
         this.playTts(event.tts_audio_chunks);
@@ -527,6 +535,9 @@
     async retrieveCatalogEvidence(query, turnId, requestRevision, toolName = "search_catalog", toolRequest = null) {
       try {
         if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
+        if (!toolName || !["search_catalog", "get_product"].includes(toolName)) {
+          throw new Error("catalog_evidence_tool_required");
+        }
         if (toolName === "search_catalog" && this.catalog?.nativeSearch) {
           const arguments_ = { ...(toolRequest?.arguments || {}), query };
           const objective = {
@@ -537,6 +548,7 @@
           sessionStorage.setItem(this.nativeSearchKey, JSON.stringify(objective));
           const destination = this.catalog.nativeSearch.buildUrl(arguments_);
           this.setState("checking");
+          this.navigationInProgress = true;
           location.assign(destination);
           return;
         }
@@ -571,7 +583,9 @@
           products,
         }, this.pendingTurn, observation);
       } catch (_) {
-        this.setState("failed", { error: "I couldn’t search this store right now. Please try again." });
+        this.setState("failed", { error: toolName === "get_product"
+          ? "I couldn’t identify that product. Please tell me its exact name."
+          : "I couldn’t search this store right now. Please try again." });
       }
     }
 
@@ -605,12 +619,23 @@
       } catch (error) {
         sessionStorage.removeItem(this.nativeSearchKey);
         console.error('[Drake] Native search observation failed:', error);
-        this.addMessage("assistant", "I reached the store search page, but I couldn’t reliably read its displayed product order.");
+        this.addMessage("assistant", "Here are the store’s search results. If you want me to open one, please tell me its product name.");
         this.pendingTurn = null;
-        this.setState("failed", { suppressError: true });
+        this.setState("ready");
       } finally {
         this.nativeSearchResuming = false;
+        this.offerConversationResume();
       }
+    }
+
+    offerConversationResume() {
+      try {
+        if (sessionStorage.getItem(this.conversationResumeKey) !== "requested") return;
+        sessionStorage.removeItem(this.conversationResumeKey);
+        this.setOpen(true);
+        this.privacy.textContent = "Your conversation paused during navigation. Press Resume conversation to continue hands-free.";
+        this.conversationButton.textContent = "Resume conversation";
+      } catch (_) {}
     }
 
     async initializePageSearch() {
@@ -619,6 +644,7 @@
         return;
       }
       await this.refreshCurrentNativeSearch();
+      this.offerConversationResume();
     }
 
     async refreshCurrentNativeSearch() {
@@ -767,6 +793,7 @@
       }
       this.setState("updating");
       try {
+        if (command.operation === "navigate_storefront") this.navigationInProgress = true;
         const result = await this.bridge.executeCommand(command);
         this.pendingReceipts.set(command.command_id, {
           result,

@@ -222,13 +222,26 @@ export class NativeSearchAdapter {
       const wanted = expected.searchParams.get(name);
       if (wanted !== null && actual.searchParams.get(name) !== wanted) throw new Error(`native_search_parameter_mismatch_${name}`);
     }
-    const roots = [...new Set([
-      this.document.querySelector('#product-grid'),
-      this.document.querySelector('main [id*="product-grid"]'),
-      this.document.querySelector('main .product-grid'),
-      this.document.querySelector('main [data-native-search-results]'),
-    ].filter(Boolean))];
-    if (roots.length !== 1) throw new Error(roots.length ? 'native_search_grid_ambiguous' : 'native_search_grid_unavailable');
+    let roots = [];
+    for (let attempt = 0; attempt < 10 && !roots.length; attempt += 1) {
+      roots = [...new Set([
+        this.document.querySelector('#product-grid'),
+        this.document.querySelector('main [id*="product-grid"]'),
+        this.document.querySelector('main .product-grid'),
+        this.document.querySelector('main [data-native-search-results]'),
+        this.document.querySelector('main ul[class*="product-grid"]'),
+        this.document.querySelector('main'),
+      ].filter(Boolean))];
+      roots = roots.filter((root) => root.querySelectorAll('a[href*="/products/"]').length);
+      if (!roots.length && attempt < 9) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!roots.length) throw new Error('native_search_grid_unavailable');
+    // Themes often expose both a section wrapper and its nested product grid.
+    // Choose the narrowest useful root instead of treating that as ambiguity.
+    roots.sort((left, right) => {
+      const count = (root) => root.querySelectorAll('a[href*="/products/"]').length;
+      return count(left) - count(right);
+    });
     const links = [...roots[0].querySelectorAll('a[href*="/products/"]')];
     const ordered = [];
     const seen = new Set();
@@ -240,7 +253,8 @@ export class NativeSearchAdapter {
       const handle = decodeURIComponent(url.pathname.split('/products/')[1]?.split('/')[0] || '');
       if (!handle || seen.has(handle)) continue;
       seen.add(handle);
-      const response = await this.fetch(`${url.pathname}.js`, { headers: { Accept: 'application/json' } });
+      const productPath = `${url.pathname.replace(/\/$/, '')}.js`;
+      const response = await this.fetch(productPath, { headers: { Accept: 'application/json' } });
       if (!response.ok) throw new Error(`native_search_product_failed_${response.status}`);
       const product = await response.json();
       product.url ||= `${url.pathname}${url.search}`;
@@ -248,6 +262,7 @@ export class NativeSearchAdapter {
     }
     normalizeProductJsonPrices(ordered);
     const products = normalizeCatalogProducts({ products: ordered }, { currency: this.currency });
+    if (!products.length && links.length) throw new Error('native_search_products_unavailable');
     const minimum = expected.searchParams.get('filter.v.price.gte');
     const maximum = expected.searchParams.get('filter.v.price.lte');
     const eligiblePrices = products.map((product) => (product.variants || [])

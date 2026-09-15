@@ -931,6 +931,11 @@ class ShoppingController:
                 extracted_intent=intent,
                 reason="Catalog evidence must be retrieved for the structured product query",
                 evidence_query=intent.product_query,
+                selected_tool="get_product",
+                tool_request={
+                    "name": "get_product",
+                    "arguments": {"product_reference": intent.product_query},
+                },
             )
 
         # Do not silently discard a second requested action when the provider

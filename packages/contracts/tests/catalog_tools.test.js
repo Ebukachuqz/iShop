@@ -25,6 +25,29 @@ test('native search URL is constrained and rendered grid order is authoritative 
   assert.throws(() => new NativeSearchAdapter({ searchUrl: 'https://evil.test/search', fetchImpl, documentRef, locationRef }).buildUrl({ query: 'x' }), /cross_origin/);
 });
 
+test('native search tolerates nested theme wrappers and chooses the product grid', async () => {
+  const links = [
+    { href: 'https://shop.test/products/complete', closest: () => null },
+    { href: 'https://shop.test/products/minimal', closest: () => null },
+  ];
+  const grid = { querySelectorAll: () => links };
+  const main = { querySelectorAll: () => [...links, { href: 'https://shop.test/products/recommended', closest: () => null }] };
+  const documentRef = { querySelector: (selector) => selector === '#product-grid' ? grid : (selector === 'main' ? main : null) };
+  const fetchImpl = async (url) => ({ ok: true, json: async () => ({
+    id: url.includes('complete') ? 1 : 2,
+    title: url.includes('complete') ? 'The Complete Snowboard' : 'The Minimal Snowboard',
+    handle: url.includes('complete') ? 'complete' : 'minimal', options: ['Title'],
+    variants: [{ id: 10, title: 'Default Title', options: ['Default Title'], price: 69995, available: true }],
+  }) });
+  const adapter = new NativeSearchAdapter({
+    searchUrl: '/search', fetchImpl, documentRef,
+    locationRef: { origin: 'https://shop.test', href: 'https://shop.test/search?q=snowboard&type=product' },
+    currency: 'USD',
+  });
+  const observed = await adapter.observe({ query: 'snowboard' });
+  assert.deepEqual(observed.products.map((item) => item.title), ['The Complete Snowboard', 'The Minimal Snowboard']);
+});
+
 
 test('Ajax browse lists collections and normalizes collection products', async () => {
   const calls = [];
