@@ -24,6 +24,12 @@ describe("merchant provider profiles", () => {
     expect(profiles.find((profile) => profile.id === "gemini-flash")?.enabled).toBe(false);
   });
 
+  test("makes the production Gemini reasoning profile available when configured", () => {
+    process.env.GEMINI_API_KEY = "configured";
+    const profile = providerProfiles().find((candidate) => candidate.id === "gemini-flash");
+    expect(profile).toMatchObject({ enabled: true, label: "Gemini 3.8 Flash" });
+  });
+
   test("enables an optional profile only after its capability gate is set", () => {
     process.env.ELEVENLABS_API_KEY = "configured";
     expect(providerProfiles().find((profile) => profile.id === "elevenlabs-scribe-v2-realtime")?.enabled).toBe(false);
@@ -40,7 +46,7 @@ describe("merchant provider profiles", () => {
       }),
     ).toEqual({
       asr: "Choose a recognized profile for this role",
-      llm: "Live eligibility remains unresolved after provider 503 responses",
+      llm: "Gemini server credential is unavailable",
     });
   });
 

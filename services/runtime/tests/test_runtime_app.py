@@ -17,6 +17,21 @@ def settings() -> RuntimeSettings:
     )
 
 
+def test_runtime_accepts_configured_gemini_merchant_profile() -> None:
+    configured = RuntimeSettings(
+        host="127.0.0.1",
+        port=8000,
+        signing_secret="runtime_test_signing_secret_123456789",
+        allowed_origins=frozenset({"https://shop.myshopify.com"}),
+        sahara_api_key="test-key",
+        record_audio=False,
+        gemini_api_key="configured-gemini-key",
+    )
+    # App construction exercises the production registry and allowlist wiring.
+    with TestClient(create_runtime_app(configured)) as client:
+        assert client.get("/health").status_code == 200
+
+
 def test_health_reports_safe_runtime_configuration() -> None:
     with TestClient(create_runtime_app(settings())) as client:
         response = client.get("/health")

@@ -14,8 +14,9 @@ from ishop.domain.models import CartSnapshot, Money
 from ishop.domain.intent import IntentOperation, ShoppingIntent
 from ishop.domain.session_store import SessionStore
 from ishop.domain.journal import CommandJournal
+from ishop.llm.gemini import GeminiLlmProvider
 from ishop.llm.groq import GroqLlmProvider
-from ishop.llm.base import GroundedResponseContext
+from ishop.llm.base import GroundedResponseContext, LlmProvider, LlmRegistry
 from ishop.orchestration.controller import ControllerTurnResult, ShoppingController
 from ishop.speech import (
     AssemblyAiStreamingSession,
@@ -40,7 +41,20 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         "gemini-3.5-transcribe-live": lambda **kwargs: GeminiLiveStreamingSession(api_key=active.gemini_api_key or "", **kwargs),
     }
 
-    llm_provider = GroqLlmProvider(api_key=active.groq_api_key)
+    llm_registry = LlmRegistry()
+    # Profile IDs are stable merchant-facing identifiers. The Gemini adapter's
+    # model can advance independently through GEMINI_MODEL after validation.
+    llm_registry.register(GeminiLlmProvider(api_key=active.gemini_api_key), set_active=True)
+    llm_registry.register(GroqLlmProvider(api_key=active.groq_api_key))
+
+    def selected_llm_provider(grant: Any) -> LlmProvider | None:
+        """Resolve only the profile authorized by the signed merchant grant."""
+        profile_id = str(getattr(grant, "llm_profile_id", ""))
+        provider = llm_registry.get(profile_id)
+        if provider is None:
+            return None
+        ready, _ = provider.check_readiness()
+        return provider if ready else None
     tts_registry = create_default_tts_registry(
         sahara_api_key=active.sahara_api_key,
         elevenlabs_api_key=active.elevenlabs_api_key or "",
@@ -54,6 +68,13 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     command_journal.restart_reconcile()
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
+        llm_provider = selected_llm_provider(grant)
+        if llm_provider is None:
+            return {
+                "status": "error",
+                "spoken_response": "The selected shopping reasoning service is unavailable.",
+                "reason": "Selected LLM profile is unknown, disabled, or missing credentials",
+            }
         ready, readiness_reason = llm_provider.check_readiness()
         if not ready:
             return {
@@ -173,7 +194,10 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             operation=intent_operation,
             supporting_transcript_span="verified storefront command result",
         )
+        llm_provider = selected_llm_provider(grant)
         try:
+            if llm_provider is None:
+                raise RuntimeError("Selected LLM profile is unavailable")
             response = await llm_provider.generate_grounded_response(GroundedResponseContext(
                 operation=intent_operation.value,
                 requested_intent=intent,
@@ -208,7 +232,11 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         signing_secret=active.signing_secret,
         allowed_origins=set(active.allowed_origins),
         session_factories=session_factories,
-        allowed_llm_profiles={"groq-gpt-oss-120b"},
+        # The transport allowlist establishes profile identity. Per-turn
+        # readiness separately verifies that the selected provider still has
+        # credentials, producing a truthful unavailable response if they were
+        # revoked after the merchant grant was issued.
+        allowed_llm_profiles={profile.profile_id for profile in llm_registry.list_profiles()},
         allowed_tts_profiles={
             "sahara-tts-female-pidgin",
             "sahara-tts-female-pcm",

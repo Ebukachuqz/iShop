@@ -119,8 +119,11 @@ class GeminiLlmProvider(LlmProvider):
                 }
             ],
             "generationConfig": {
-                "response_mime_type": "application/json",
-                "temperature": 0.0,
+                "responseMimeType": "application/json",
+                # Gemini 3.8 defaults to medium thinking. Shopping intent is a
+                # latency-sensitive classification/argument task, so use the
+                # documented low setting and omit legacy sampling controls.
+                "thinkingConfig": {"thinkingLevel": "low"},
             },
         }
 
@@ -212,7 +215,10 @@ class GeminiLlmProvider(LlmProvider):
             prompt += f"\nYour previous proposal was invalid. Correct these problems: {request.validation_feedback[:800]}"
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"response_mime_type": "application/json", "temperature": 0.0},
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingLevel": "low"},
+            },
         }
         url = f"{GEMINI_API_BASE}/{self._model_name}:generateContent?key={self._api_key}"
         try:
@@ -262,7 +268,7 @@ class GeminiLlmProvider(LlmProvider):
                     ],
                 }
             ],
-            "generationConfig": {"temperature": 0.2},
+            "generationConfig": {"thinkingConfig": {"thinkingLevel": "low"}},
         }
 
         url = f"{GEMINI_API_BASE}/{self._model_name}:generateContent?key={self._api_key}"

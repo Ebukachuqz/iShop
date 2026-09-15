@@ -14,6 +14,7 @@ const database = vi.hoisted(() => ({
 vi.mock("./db.server", () => ({ default: database }));
 
 import {
+  DEFAULT_SELECTION,
   InvalidConfigurationError,
   saveMerchantConfiguration,
   StaleConfigurationError,
@@ -32,6 +33,14 @@ describe("merchant configuration persistence", () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
+  });
+
+  test("uses Gemini 3.8 Flash profile for new merchant installations", () => {
+    expect(DEFAULT_SELECTION).toEqual({
+      asr: "sahara-stream-pcm",
+      llm: "gemini-flash",
+      tts: "sahara-tts-female-pidgin",
+    });
   });
 
   test("binds updates to the authenticated shop and expected revision", async () => {

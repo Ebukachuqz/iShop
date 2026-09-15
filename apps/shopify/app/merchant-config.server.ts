@@ -5,8 +5,8 @@ import { normalizeProfileSelection, validateProfileSelection, type ProviderRole 
 
 export const DEFAULT_SELECTION: Record<ProviderRole, string> = {
   asr: "sahara-stream-pcm",
-  llm: "groq-gpt-oss-120b",
-  tts: "sahara-tts-female-pcm",
+  llm: "gemini-flash",
+  tts: "sahara-tts-female-pidgin",
 };
 
 export class StaleConfigurationError extends Error {}

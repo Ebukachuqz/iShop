@@ -91,10 +91,10 @@ export function providerProfiles(): ProviderProfile[] {
     {
       id: "gemini-flash",
       role: "llm",
-      label: "Gemini Flash",
-      mode: "Structured shopping intent",
-      enabled: false,
-      disabledReason: "Live eligibility remains unresolved after provider 503 responses",
+      label: "Gemini 3.8 Flash",
+      mode: "Structured shopping intent and grounded responses",
+      enabled: credentialPresent("GEMINI_API_KEY"),
+      disabledReason: "Gemini server credential is unavailable",
     },
     {
       id: "sahara-tts-female-pidgin",

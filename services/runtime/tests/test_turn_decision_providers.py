@@ -60,6 +60,8 @@ def test_gemini_requests_and_parses_turn_decision(monkeypatch):
     assert result.decision is not None and result.decision.mode == DecisionMode.RESPOND
     prompt = captured["contents"][0]["parts"][0]["text"]
     assert '"respond"' in prompt and "Do not return a bare ShoppingIntent" in prompt
+    assert captured["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert "temperature" not in captured["generationConfig"]
 
 
 def test_turn_decision_rejects_invalid_mode_shapes():
