@@ -63,6 +63,11 @@ test('voice widget exposes provider-neutral session and PCM utilities', () => {
   const converted = voice.floatToPcm16(new Float32Array(512).fill(0.5));
   assert.equal(converted.byteLength, pcm.byteLength);
   assert.equal(new Int16Array(converted)[0], 16383);
+  const wav = voice.pcm16ToWav(new Uint8Array([1, 0, 2, 0]).buffer, 16000, 1);
+  assert.equal(new TextDecoder().decode(new Uint8Array(wav, 0, 4)), 'RIFF');
+  assert.equal(new DataView(wav).getUint32(24, true), 16000);
+  assert.equal(new DataView(wav).getUint32(40, true), 4);
+  assert.throws(() => voice.pcm16ToWav(new Uint8Array([1]).buffer), /unaligned_pcm_frame/);
   assert.equal(
     voice.buildVoiceWebSocketUrl('wss://runtime.example/ws', 'shop.myshopify.com'),
     'wss://runtime.example/ws/voice/shop.myshopify.com',

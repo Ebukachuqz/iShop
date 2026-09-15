@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import db from "./db.server";
-import { validateProfileSelection, type ProviderRole } from "./provider-profiles.server";
+import { normalizeProfileSelection, validateProfileSelection, type ProviderRole } from "./provider-profiles.server";
 
 export const DEFAULT_SELECTION: Record<ProviderRole, string> = {
   asr: "sahara-stream-pcm",
@@ -48,7 +48,8 @@ export async function saveMerchantConfiguration(input: {
   expectedRevision: string;
   selection: Record<ProviderRole, string>;
 }) {
-  const errors = validateProfileSelection(input.selection);
+  const selection = normalizeProfileSelection(input.selection);
+  const errors = validateProfileSelection(selection);
   if (Object.keys(errors).length) throw new InvalidConfigurationError(errors);
   const revision = randomUUID();
   return db.$transaction(async (transaction) => {
@@ -56,9 +57,9 @@ export async function saveMerchantConfiguration(input: {
       where: { shop: input.shop, revision: input.expectedRevision },
       data: {
         revision,
-        asrProfileId: input.selection.asr,
-        llmProfileId: input.selection.llm,
-        ttsProfileId: input.selection.tts,
+        asrProfileId: selection.asr,
+        llmProfileId: selection.llm,
+        ttsProfileId: selection.tts,
       },
     });
     if (changed.count !== 1) throw new StaleConfigurationError("Settings changed in another session");
@@ -66,9 +67,9 @@ export async function saveMerchantConfiguration(input: {
       data: {
         shop: input.shop,
         revision,
-        asrProfileId: input.selection.asr,
-        llmProfileId: input.selection.llm,
-        ttsProfileId: input.selection.tts,
+        asrProfileId: selection.asr,
+        llmProfileId: selection.llm,
+        ttsProfileId: selection.tts,
       },
     });
     return transaction.merchantConfiguration.findUniqueOrThrow({ where: { shop: input.shop } });
@@ -77,11 +78,11 @@ export async function saveMerchantConfiguration(input: {
 
 export async function getConfigurationSnapshot(shop: string) {
   const configuration = await getMerchantConfiguration(shop);
-  const selection = {
+  const selection = normalizeProfileSelection({
     asr: configuration.asrProfileId,
     llm: configuration.llmProfileId,
     tts: configuration.ttsProfileId,
-  };
+  });
   const errors = validateProfileSelection(selection);
   if (Object.keys(errors).length) throw new InvalidConfigurationError(errors);
   return { revision: configuration.revision, selection };

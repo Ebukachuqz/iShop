@@ -26,6 +26,7 @@ describe("merchant configuration persistence", () => {
     vi.clearAllMocks();
     process.env.SAHARA_API_KEY = "configured";
     process.env.GROQ_API_KEY = "configured";
+    process.env.ISHOP_ENABLE_SAHARA_PIDGIN_TTS = "true";
     database.$transaction.mockImplementation(async (operation) => operation(database));
   });
 
@@ -48,6 +49,7 @@ describe("merchant configuration persistence", () => {
     expect(database.merchantConfiguration.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { shop: "shop-a.myshopify.com", revision: "revision-1" },
+        data: expect.objectContaining({ ttsProfileId: "sahara-tts-female-pidgin" }),
       }),
     );
     expect(database.merchantConfigurationRevision.create).toHaveBeenCalledOnce();

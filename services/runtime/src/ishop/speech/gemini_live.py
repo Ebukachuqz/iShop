@@ -12,7 +12,7 @@ from typing import Any
 from ishop.speech.base import SpeechProviderError
 from ishop.speech.realtime import RealtimeSpeechSession, SpeechEventKind, SpeechStreamEvent
 
-GEMINI_LIVE_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
+GEMINI_LIVE_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
 
 async def _default_connect(url: str, headers: dict[str, str]):
@@ -31,7 +31,9 @@ class GeminiLiveStreamingSession(RealtimeSpeechSession):
         api_key: str | None = None,
         *,
         revision: int,
+        language: str = "en",
         sample_rate: int = 16000,
+        channels: int = 1,
         model_name: str = "gemini-3.5-transcribe-live",
         endpoint_url: str | None = None,
         connector: Callable[..., Any] | None = None,
@@ -39,6 +41,9 @@ class GeminiLiveStreamingSession(RealtimeSpeechSession):
         self._api_key = api_key or os.getenv("GEMINI_API_KEY")
         self._revision = revision
         self._sample_rate = sample_rate
+        if channels != 1:
+            raise ValueError("Gemini live transcription accepts mono audio only")
+        self._language = language
         self._model_name = model_name
         self._endpoint_url = endpoint_url or os.getenv("GEMINI_LIVE_WS_URL", GEMINI_LIVE_WS_URL)
         self._connector = connector or _default_connect
@@ -62,7 +67,9 @@ class GeminiLiveStreamingSession(RealtimeSpeechSession):
                 "model": f"models/{self._model_name}",
                 "generationConfig": {
                     "responseModalities": ["TEXT"],
-                    "speechConfig": {"voiceConfig": {}},
+                },
+                "inputAudioTranscription": {
+                    "languageCodes": [] if self._language in {"", "auto", "pcm"} else [self._language],
                 },
             }
         }
@@ -77,9 +84,7 @@ class GeminiLiveStreamingSession(RealtimeSpeechSession):
         if self._socket is not None:
             msg = {
                 "realtimeInput": {
-                    "mediaChunks": [
-                        {"mimeType": f"audio/pcm;rate={self._sample_rate}", "data": base64.b64encode(pcm16_audio).decode("ascii")}
-                    ]
+                    "audio": {"mimeType": f"audio/pcm;rate={self._sample_rate}", "data": base64.b64encode(pcm16_audio).decode("ascii")}
                 }
             }
             await self._socket.send(json.dumps(msg))
@@ -90,7 +95,7 @@ class GeminiLiveStreamingSession(RealtimeSpeechSession):
         self._committed = True
         if self._socket is not None:
             try:
-                await self._socket.send(json.dumps({"clientContent": {"turnComplete": True}}))
+                await self._socket.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
             except Exception:
                 pass
 
@@ -128,25 +133,19 @@ class GeminiLiveStreamingSession(RealtimeSpeechSession):
                 except Exception:
                     continue
                 server_content = data.get("serverContent", {})
-                model_turn = server_content.get("modelTurn", {})
-                parts = model_turn.get("parts", [])
-                text_parts = [p.get("text", "") for p in parts if p.get("text")]
-                text = "".join(text_parts).strip()
-                is_turn_complete = bool(server_content.get("turnComplete"))
-
-                if text:
-                    if is_turn_complete:
-                        if text != self._last_final_text:
-                            self._last_final_text = text
-                            await self._events_queue.put(
-                                SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, self._session_id, self._revision, text=text)
-                            )
-                            break
-                    else:
-                        await self._events_queue.put(
-                            SpeechStreamEvent(SpeechEventKind.PARTIAL_TRANSCRIPT, self._session_id, self._revision, text=text)
-                        )
-                elif is_turn_complete:
+                interim = server_content.get("interimInputTranscription") or {}
+                final = server_content.get("inputTranscription") or {}
+                interim_text = str(interim.get("text", "")).strip()
+                final_text = str(final.get("text", "")).strip()
+                if interim_text:
+                    await self._events_queue.put(
+                        SpeechStreamEvent(SpeechEventKind.PARTIAL_TRANSCRIPT, self._session_id, self._revision, text=interim_text)
+                    )
+                if final_text and final_text != self._last_final_text:
+                    self._last_final_text = final_text
+                    await self._events_queue.put(
+                        SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, self._session_id, self._revision, text=final_text)
+                    )
                     break
                 if data.get("error"):
                     err = data["error"].get("message") or "gemini_transcription_error"

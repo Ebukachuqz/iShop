@@ -407,6 +407,9 @@
             audio: audio.buffer,
             generation: this.playback.generation,
             format: chunk.format || "wav",
+            container: chunk.container || chunk.format || "wav",
+            sampleRate: Number(chunk.sample_rate) || 16000,
+            channels: Number(chunk.channels) || 1,
           });
         } catch (error) {
           console.error('[Drake] Voice playback failed:', error);

@@ -72,6 +72,9 @@ class FakeHttpStreamResponse:
             return b""
         return self._chunks.pop(0)
 
+    def readline(self) -> bytes:
+        return self.read()
+
     def close(self) -> None:
         self.closed = True
 
@@ -128,6 +131,9 @@ def test_vp01_elevenlabs_realtime_stt_events_and_deduplication():
 
         await session.send_audio(b"\x00\x00" * 800)
         assert len(fake_socket.sent) == 1
+        sent_audio = json.loads(fake_socket.sent[0])
+        assert sent_audio["message_type"] == "input_audio_chunk"
+        assert base64.b64decode(sent_audio["audio_base_64"]) == b"\x00\x00" * 800
 
         events = []
         async for ev in session.events():
@@ -234,11 +240,9 @@ def test_vp03_elevenlabs_ws_tts_stream_input():
 def test_vp06_vp07_assemblyai_realtime_stt_and_no_standalone_tts():
     async def run():
         fake_socket = FakeAsyncSocket([
-            json.dumps({"message_type": "SessionBegins", "session_id": "aai_session_123"}),
-            json.dumps({"message_type": "PartialTranscript", "text": "need black"}),
-            json.dumps({"message_type": "FinalTranscript", "text": "need black shoes"}),
-            json.dumps({"message_type": "FinalTranscript", "text": "need black shoes"}),  # Formatted repeat
-            json.dumps({"message_type": "SessionTerminated"}),
+            json.dumps({"type": "Begin", "id": "aai_session_123"}),
+            json.dumps({"type": "Turn", "transcript": "need black", "end_of_turn": False}),
+            json.dumps({"type": "Turn", "transcript": "need black shoes", "end_of_turn": True}),
         ])
 
         async def fake_connector(url: str, headers: dict[str, str]):
@@ -254,10 +258,13 @@ def test_vp06_vp07_assemblyai_realtime_stt_and_no_standalone_tts():
 
         await session.start()
         assert fake_socket.headers.get("authorization") == "aai_key"
+        assert fake_socket.url.startswith("wss://streaming.assemblyai.com/v3/ws?")
+        assert "speech_model=u3-rt-pro" in fake_socket.url
 
         await session.send_audio(b"\x00\x00" * 512)
         await session.commit()
-        assert any("terminate_session" in str(m) for m in fake_socket.sent)
+        assert any("ForceEndpoint" in str(m) for m in fake_socket.sent)
+        assert any("Terminate" in str(m) for m in fake_socket.sent)
 
         events = [e async for e in session.events()]
         finals = [e for e in events if e.kind == SpeechEventKind.FINAL_TRANSCRIPT]
@@ -279,14 +286,12 @@ def test_vp08_gemini_live_stt():
         fake_socket = FakeAsyncSocket([
             json.dumps({
                 "serverContent": {
-                    "modelTurn": {"parts": [{"text": "find dress"}]},
-                    "turnComplete": False,
+                    "interimInputTranscription": {"text": "find dress"},
                 }
             }),
             json.dumps({
                 "serverContent": {
-                    "modelTurn": {"parts": [{"text": "find red dress"}]},
-                    "turnComplete": True,
+                    "inputTranscription": {"text": "find red dress"},
                 }
             }),
         ])
@@ -303,9 +308,11 @@ def test_vp08_gemini_live_stt():
 
         await session.start()
         assert "gemini-3.5-transcribe-live" in str(fake_socket.sent[0])
+        assert "inputAudioTranscription" in str(fake_socket.sent[0])
 
         await session.send_audio(b"\x00\x00" * 512)
         assert any("realtimeInput" in str(m) for m in fake_socket.sent)
+        assert any('"audio"' in str(m) for m in fake_socket.sent)
 
         events = [e async for e in session.events()]
         partials = [e for e in events if e.kind == SpeechEventKind.PARTIAL_TRANSCRIPT]
@@ -323,39 +330,33 @@ def test_vp08_gemini_live_stt():
 def test_vp09_vp10_vp11_gemini_streaming_tts():
     async def run():
         audio_part = base64.b64encode(b"\x05\x00" * 512).decode("ascii")
-        fake_socket = FakeAsyncSocket([
-            json.dumps({
-                "serverContent": {
-                    "modelTurn": {
-                        "parts": [{"inlineData": {"mimeType": "audio/pcm;rate=24000", "data": audio_part}}]
-                    },
-                    "turnComplete": True,
-                }
-            })
+        response = FakeHttpStreamResponse([
+            ("data: " + json.dumps({"event_type": "step.delta", "delta": {"type": "audio", "data": audio_part}}) + "\n").encode()
         ])
-
-        async def fake_connector(url: str, headers: dict[str, str]):
-            return fake_socket
+        captured = {}
+        def fake_opener(request, timeout=10.0):
+            captured["url"] = request.full_url
+            captured["headers"] = dict(request.headers)
+            captured["body"] = json.loads(request.data.decode())
+            return response
 
         provider = GeminiStreamingTtsProvider(
             api_key="gemini_tts_key",
-            voice_name="Aoede",
-            connector=fake_connector,
+            voice_name="Kore",
+            opener=fake_opener,
         )
 
         session = await provider.synthesize("2 items added for $15.00", generation=1)
-        # VP-10: Exact text sent without prompt injection
-        setup_msg = json.loads(fake_socket.sent[0])
-        assert setup_msg["setup"]["model"] == "models/gemini-3.1-flash-tts-preview"
-        assert setup_msg["setup"]["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Aoede"
-
-        text_msg = json.loads(fake_socket.sent[1])
-        assert "2 items added for $15.00" in text_msg["clientContent"]["turns"][0]["parts"][0]["text"]
+        assert captured["url"].endswith("/v1beta/interactions")
+        assert captured["body"]["model"] == "gemini-3.1-flash-tts-preview"
+        assert captured["body"]["stream"] is True
+        assert "2 items added for $15.00" in captured["body"]["input"]
+        assert captured["body"]["generation_config"]["speech_config"][0]["voice"] == "Kore"
 
         chunks = [c async for c in session.chunks()]
         assert len(chunks) == 1
         assert chunks[0].sample_rate == 24000
-        assert chunks[0].is_final is True
+        assert chunks[0].container == "none"
 
     asyncio.run(run())
 
@@ -363,7 +364,7 @@ def test_vp09_vp10_vp11_gemini_streaming_tts():
 # ---------------------------------------------------------------------------
 # VP-12 & VP-13: Groq Orpheus TTS & Pidgin Rejection
 # ---------------------------------------------------------------------------
-def test_vp12_vp13_groq_orpheus_tts_and_pidgin_rejection():
+def test_vp12_vp13_groq_orpheus_tts_is_explicitly_english_and_buffered():
     async def run():
         wav_header_and_data = b"RIFF" + b"\x00" * 36 + b"data" + (b"\x06\x00" * 256)
 
@@ -387,12 +388,21 @@ def test_vp12_vp13_groq_orpheus_tts_and_pidgin_rejection():
         assert len(chunks) == 1
         assert chunks[0].audio == wav_header_and_data
 
-        # VP-13: Nigerian Pidgin is rejected with TtsProviderError without translation
-        with pytest.raises(TtsProviderError, match="Groq Orpheus TTS only supports English"):
-            await provider.synthesize("Wetin dey your cart na two shirts", generation=2)
+        assert provider.capabilities.languages == ("en",)
+        assert provider.capabilities.supports_cancellation is False
+
+        # Content-token guessing must not reject valid English containing words such as "fit".
+        second = await provider.synthesize("This size should fit.", generation=2)
+        assert len([chunk async for chunk in second.chunks()]) == 1
 
     asyncio.run(run())
 
+
+def test_realtime_adapters_accept_the_common_transport_arguments():
+    common = {"revision": 1, "language": "en", "sample_rate": 16000, "channels": 1}
+    assert ElevenLabsScribeRealtimeSession(api_key="x", **common)
+    assert AssemblyAiStreamingSession(api_key="x", **common)
+    assert GeminiLiveStreamingSession(api_key="x", **common)
 
 # ---------------------------------------------------------------------------
 # VP-14: Frozen Signed TTS Selection Changes Runtime Factory

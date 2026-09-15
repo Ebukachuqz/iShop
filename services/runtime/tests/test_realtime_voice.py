@@ -134,7 +134,10 @@ def test_sahara_tts_rebalances_a_short_final_chunk():
 
 def test_cancel_closes_tts_before_audio_can_be_emitted():
     async def run():
-        socket = FakeSocket([{"message_type": "SESSION_CREATED", "session_id": "tts-1"}])
+        socket = FakeSocket([
+            {"message_type": "SESSION_CREATED", "session_id": "tts-1"},
+            {"message_type": "TEXT_CHUNK_ACK", "chunk_id": 1},
+        ])
         provider = SaharaTtsProvider("key", connector=connector_for(socket))
         session = await provider.synthesize("Please stop speaking now.", generation=2)
         await session.cancel()

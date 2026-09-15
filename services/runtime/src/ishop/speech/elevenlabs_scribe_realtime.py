@@ -33,6 +33,7 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
         revision: int,
         language: str = "en",
         sample_rate: int = 16000,
+        channels: int = 1,
         model_id: str = "scribe_v2_realtime",
         endpoint_url: str | None = None,
         connector: Callable[..., Any] | None = None,
@@ -41,6 +42,8 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
         self._revision = revision
         self._language = language
         self._sample_rate = sample_rate
+        if channels != 1:
+            raise ValueError("ElevenLabs realtime transcription accepts mono audio only")
         self._model_id = model_id
         self._endpoint_url = endpoint_url or os.getenv("ELEVENLABS_REALTIME_STT_WS_URL", ELEVENLABS_REALTIME_STT_WS_URL)
         self._connector = connector or _default_connect
@@ -55,7 +58,10 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
     async def start(self) -> SpeechStreamEvent:
         if not self._api_key:
             raise SpeechProviderError("ELEVENLABS_API_KEY not configured", "elevenlabs", False)
-        query = urlencode({"model_id": self._model_id, "audio_format": f"pcm_{self._sample_rate}"})
+        query_values = {"model_id": self._model_id, "audio_format": f"pcm_{self._sample_rate}", "commit_strategy": "manual"}
+        if self._language and self._language not in {"pcm", "auto"}:
+            query_values["language_code"] = self._language
+        query = urlencode(query_values)
         self._socket = await self._connector(
             f"{self._endpoint_url}?{query}",
             {"xi-api-key": self._api_key},
@@ -68,7 +74,11 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
         if self._closed or self._committed:
             raise RuntimeError("Cannot send audio on committed or closed session")
         if self._socket is not None:
-            await self._socket.send(pcm16_audio)
+            import base64
+            await self._socket.send(json.dumps({
+                "message_type": "input_audio_chunk",
+                "audio_base_64": base64.b64encode(pcm16_audio).decode("ascii"),
+            }))
 
     async def commit(self) -> None:
         if self._committed or self._closed:
@@ -76,7 +86,11 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
         self._committed = True
         if self._socket is not None:
             try:
-                await self._socket.send(json.dumps({"type": "commit"}))
+                await self._socket.send(json.dumps({
+                    "message_type": "input_audio_chunk",
+                    "audio_base_64": "",
+                    "commit": True,
+                }))
             except Exception:
                 pass
 

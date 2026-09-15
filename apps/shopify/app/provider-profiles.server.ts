@@ -10,6 +10,9 @@ export type ProviderProfile = {
 };
 
 const credentialPresent = (name: string) => Boolean(process.env[name]?.trim());
+const explicitlyVerified = (name: string) => process.env[name]?.trim().toLowerCase() === "true";
+const verifiedProvider = (credential: string, gate: string) =>
+  credentialPresent(credential) && explicitlyVerified(gate);
 
 export function providerProfiles(): ProviderProfile[] {
   return [
@@ -26,24 +29,24 @@ export function providerProfiles(): ProviderProfile[] {
       role: "asr",
       label: "ElevenLabs Scribe v2 realtime",
       mode: "Realtime WebSocket transcription",
-      enabled: credentialPresent("ELEVENLABS_API_KEY"),
-      disabledReason: "ElevenLabs server credential is unavailable",
+      enabled: verifiedProvider("ELEVENLABS_API_KEY", "ISHOP_ENABLE_ELEVENLABS_REALTIME_STT"),
+      disabledReason: "ElevenLabs realtime STT requires a credential and explicit account verification",
     },
     {
       id: "assemblyai-v3-realtime",
       role: "asr",
       label: "AssemblyAI v3 realtime",
       mode: "Realtime streaming transcription",
-      enabled: credentialPresent("ASSEMBLYAI_API_KEY"),
-      disabledReason: "AssemblyAI server credential is unavailable",
+      enabled: verifiedProvider("ASSEMBLYAI_API_KEY", "ISHOP_ENABLE_ASSEMBLYAI_REALTIME_STT"),
+      disabledReason: "AssemblyAI realtime STT requires a credential and explicit account verification",
     },
     {
       id: "gemini-3.5-transcribe-live",
       role: "asr",
       label: "Gemini 3.5 Transcribe live",
       mode: "Live streaming transcription",
-      enabled: credentialPresent("GEMINI_API_KEY"),
-      disabledReason: "Gemini server credential is unavailable",
+      enabled: verifiedProvider("GEMINI_API_KEY", "ISHOP_ENABLE_GEMINI_LIVE_STT"),
+      disabledReason: "Gemini live STT requires a credential and explicit model verification",
     },
     {
       id: "groq-whisper-large-v3-batch",
@@ -98,48 +101,48 @@ export function providerProfiles(): ProviderProfile[] {
       role: "tts",
       label: "Sahara female Pidgin-English voice",
       mode: "Sahara streaming Pidgin voice",
-      enabled: credentialPresent("SAHARA_API_KEY"),
-      disabledReason: "Sahara server credential is unavailable",
+      enabled: verifiedProvider("SAHARA_API_KEY", "ISHOP_ENABLE_SAHARA_PIDGIN_TTS"),
+      disabledReason: "Sahara female Pidgin TTS tuple has not been explicitly verified",
     },
     {
       id: "sahara-tts-female-pcm",
       role: "tts",
       label: "Drake female voice (legacy)",
       mode: "Sahara female voice (migrates to Pidgin)",
-      enabled: credentialPresent("SAHARA_API_KEY"),
-      disabledReason: "Sahara server credential is unavailable",
+      enabled: verifiedProvider("SAHARA_API_KEY", "ISHOP_ENABLE_SAHARA_PIDGIN_TTS"),
+      disabledReason: "Legacy voice requires the verified Sahara female Pidgin TTS tuple",
     },
     {
       id: "elevenlabs-tts-female-stream",
       role: "tts",
       label: "ElevenLabs female voice (HTTP stream)",
       mode: "HTTP progressive audio streaming",
-      enabled: credentialPresent("ELEVENLABS_API_KEY"),
-      disabledReason: "ElevenLabs server credential is unavailable",
+      enabled: verifiedProvider("ELEVENLABS_API_KEY", "ISHOP_ENABLE_ELEVENLABS_HTTP_TTS"),
+      disabledReason: "ElevenLabs HTTP TTS requires a credential and explicit voice/audio verification",
     },
     {
       id: "elevenlabs-tts-female-ws",
       role: "tts",
       label: "ElevenLabs female voice (WebSocket)",
       mode: "Bidirectional stream-input synthesis",
-      enabled: credentialPresent("ELEVENLABS_API_KEY"),
-      disabledReason: "ElevenLabs server credential is unavailable",
+      enabled: verifiedProvider("ELEVENLABS_API_KEY", "ISHOP_ENABLE_ELEVENLABS_WS_TTS"),
+      disabledReason: "ElevenLabs WebSocket TTS requires a credential and explicit voice/audio verification",
     },
     {
       id: "gemini-tts-female-stream",
       role: "tts",
       label: "Gemini female voice (streaming)",
       mode: "Interactions audio stream",
-      enabled: credentialPresent("GEMINI_API_KEY"),
-      disabledReason: "Gemini server credential is unavailable",
+      enabled: verifiedProvider("GEMINI_API_KEY", "ISHOP_ENABLE_GEMINI_TTS"),
+      disabledReason: "Gemini streaming TTS requires a credential and explicit model/audio verification",
     },
     {
       id: "groq-orpheus-tts-female",
       role: "tts",
       label: "Groq Orpheus female English voice",
       mode: "Buffered speech synthesis",
-      enabled: credentialPresent("GROQ_API_KEY"),
-      disabledReason: "Groq server credential is unavailable",
+      enabled: verifiedProvider("GROQ_API_KEY", "ISHOP_ENABLE_GROQ_TTS"),
+      disabledReason: "Groq TTS requires a credential and explicit voice/audio verification",
     },
   ];
 }
@@ -155,16 +158,19 @@ export function profilesForBrowser() {
   }));
 }
 
+export function normalizeProfileSelection(selection: Record<ProviderRole, string>) {
+  return {
+    ...selection,
+    tts: selection.tts === "sahara-tts-female-pcm" ? "sahara-tts-female-pidgin" : selection.tts,
+  };
+}
+
 export function validateProfileSelection(selection: Record<ProviderRole, string>) {
   const profiles = providerProfiles();
-  const normalizedSelection = { ...selection };
-  // Transparent migration for legacy profile ID
-  if (normalizedSelection.tts === "sahara-tts-female-pcm") {
-    normalizedSelection.tts = "sahara-tts-female-pidgin";
-  }
+  const normalizedSelection = normalizeProfileSelection(selection);
   const errors: Partial<Record<ProviderRole, string>> = {};
   for (const role of ["asr", "llm", "tts"] as const) {
-    const profile = profiles.find((candidate) => candidate.id === selection[role] || candidate.id === normalizedSelection[role]);
+    const profile = profiles.find((candidate) => candidate.id === normalizedSelection[role]);
     if (!profile || profile.role !== role) {
       errors[role] = "Choose a recognized profile for this role";
     } else if (!profile.enabled) {

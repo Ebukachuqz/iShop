@@ -207,7 +207,13 @@
     _playNext() {
       if (this.blocked || this.active || !this.queue.length) return;
       const chunk = this.queue.shift();
-      const audio = new Audio(URL.createObjectURL(new Blob([chunk.audio], { type: "audio/" + (chunk.format || "wav") })));
+      const rawPcm = (chunk.container || "").toLowerCase() === "none" &&
+        (chunk.format || "").toLowerCase() === "pcm";
+      const playable = rawPcm
+        ? pcm16ToWav(chunk.audio, chunk.sampleRate || 16000, chunk.channels || 1)
+        : chunk.audio;
+      const mime = rawPcm ? "audio/wav" : "audio/" + (chunk.format || "wav");
+      const audio = new Audio(URL.createObjectURL(new Blob([playable], { type: mime })));
       this.active = audio;
       const finish = () => {
         if (this.active !== audio) return;
@@ -237,6 +243,23 @@
     return pcm.buffer;
   }
 
+  function pcm16ToWav(pcmBuffer, sampleRate = 16000, channels = 1) {
+    if (!pcmBuffer || typeof pcmBuffer.byteLength !== "number") throw new TypeError("pcm_buffer_required");
+    if (pcmBuffer.byteLength % (2 * channels) !== 0) throw new Error("unaligned_pcm_frame");
+    const output = new ArrayBuffer(44 + pcmBuffer.byteLength);
+    const view = new DataView(output);
+    const write = (offset, value) => {
+      for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+    };
+    write(0, "RIFF"); view.setUint32(4, 36 + pcmBuffer.byteLength, true); write(8, "WAVE");
+    write(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+    view.setUint16(22, channels, true); view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * channels * 2, true); view.setUint16(32, channels * 2, true);
+    view.setUint16(34, 16, true); write(36, "data"); view.setUint32(40, pcmBuffer.byteLength, true);
+    new Uint8Array(output, 44).set(new Uint8Array(pcmBuffer));
+    return output;
+  }
+
   function buildVoiceWebSocketUrl(baseUrl, shopDomain) {
     const url = new URL(baseUrl);
     if (!['ws:', 'wss:'].includes(url.protocol)) throw new Error('voice_url_protocol');
@@ -255,6 +278,7 @@
       PcmCapture,
       AudioPlayback,
       floatToPcm16,
+      pcm16ToWav,
       buildVoiceWebSocketUrl,
     };
     const root = document.getElementById("ishop-drake-root");

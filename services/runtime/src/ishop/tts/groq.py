@@ -16,15 +16,6 @@ GROQ_SPEECH_URL = "https://api.groq.com/openai/v1/audio/speech"
 DEFAULT_FEMALE_VOICE = "autumn"
 DEFAULT_MODEL = "canopylabs/orpheus-v1-english"
 
-# Common Nigerian Pidgin markers that must not silently route to English Orpheus TTS
-PIDGIN_MARKERS = frozenset(["dey", "fit", "wetin", "na", "abi", "kwanu", "sef", "don", "no be", "dem", "una"])
-
-
-def _detect_pidgin(text: str) -> bool:
-    tokens = set(text.lower().split())
-    return bool(tokens & PIDGIN_MARKERS)
-
-
 class GroqOrpheusTtsSession(TtsSession):
     def __init__(self, audio_data: bytes, generation: int, reply_id: str | None = None, response_format: str = "wav"):
         self._audio_data = audio_data
@@ -84,7 +75,7 @@ class GroqOrpheusTtsProvider(TtsProvider):
             max_text_chars=1000,
             languages=("en",),
             voice_gender="female",
-            supports_cancellation=True,
+            supports_cancellation=False,
             enabled=has_key,
             disabled_reason=None if has_key else "GROQ_API_KEY not configured",
         )
@@ -94,13 +85,6 @@ class GroqOrpheusTtsProvider(TtsProvider):
             raise TtsProviderError("GROQ_API_KEY not configured", "groq", False)
         if not text.strip():
             raise ValueError("TTS text must not be empty")
-
-        if _detect_pidgin(text):
-            raise TtsProviderError(
-                "Groq Orpheus TTS only supports English text; Pidgin English text requires Sahara TTS",
-                "groq",
-                False,
-            )
 
         body = json.dumps({
             "model": self._model,

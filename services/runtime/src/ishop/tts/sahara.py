@@ -43,11 +43,16 @@ class SaharaTtsSession(TtsSession):
                     {"message_type": "INPUT_TEXT_CHUNK", "text": text_chunk, "ack_id": chunk_id}
                 )
             )
+            acknowledgement = await asyncio.wait_for(self._receive(), timeout=5)
+            if acknowledgement.get("message_type") != "TEXT_CHUNK_ACK" or _optional_int(acknowledgement.get("chunk_id")) != chunk_id:
+                await self.cancel()
+                raise TtsProviderError("Sahara TTS returned an invalid text chunk acknowledgement", "sahara", False)
 
     async def chunks(self) -> AsyncIterator[TtsAudioChunk]:
         chunk_id = 1
         requested_chunk: int | None = None
         committed = False
+        processing_attempts = 0
         try:
             while not self._closed:
                 if requested_chunk is None and chunk_id <= len(self._text_chunks):
@@ -62,10 +67,19 @@ class SaharaTtsSession(TtsSession):
                 status = payload.get("processing_status") or payload.get("processing_staus")
                 encoded = payload.get("audio_base_64")
                 if kind == "FETCH_AUDIO_CHUNK" and status == "READY" and encoded:
+                    response_chunk = _optional_int(payload.get("chunk_id"))
+                    if response_chunk is not None and response_chunk != chunk_id:
+                        raise TtsProviderError("Sahara TTS returned audio for an unexpected chunk", "sahara", False)
+                    try:
+                        decoded = base64.b64decode(encoded, validate=True)
+                    except (ValueError, TypeError) as exc:
+                        raise TtsProviderError("Sahara TTS returned invalid audio data", "sahara", False) from exc
+                    if not decoded or len(decoded) > 5_000_000:
+                        raise TtsProviderError("Sahara TTS audio chunk size is invalid", "sahara", False)
                     fmt = str(payload.get("extension", ".wav")).lstrip(".")
                     is_final = chunk_id >= len(self._text_chunks)
                     yield TtsAudioChunk(
-                        audio=base64.b64decode(encoded, validate=True),
+                        audio=decoded,
                         generation=self._generation,
                         reply_id=self._reply_id,
                         sequence=chunk_id,
@@ -77,12 +91,16 @@ class SaharaTtsSession(TtsSession):
                     )
                     chunk_id += 1
                     requested_chunk = None
+                    processing_attempts = 0
                     if chunk_id > len(self._text_chunks) and not committed:
                         await self._socket.send(json.dumps({"message_type": "COMMIT"}))
                         committed = True
                 elif kind == "FETCH_AUDIO_CHUNK" and status == "PROCESSING":
                     requested_chunk = None
-                    await asyncio.sleep(0.05)
+                    processing_attempts += 1
+                    if processing_attempts > 20:
+                        raise TtsProviderError("Sahara TTS audio generation timed out", "sahara", True)
+                    await asyncio.sleep(min(0.1 * (2 ** min(processing_attempts - 1, 3)), 0.5))
                 elif kind == "COMMITTED_AUDIO":
                     break
         finally:
@@ -120,7 +138,7 @@ class SaharaTtsProvider(TtsProvider):
         self,
         api_key: str | None = None,
         *,
-        language: str = "pcm",
+        language: str = "en",
         accent: str = "pidgin",
         gender: str = "female",
         output_format: str = "wav",
@@ -146,7 +164,7 @@ class SaharaTtsProvider(TtsProvider):
             supported_sample_rates=(16000,),
             min_text_chars=10,
             max_text_chars=100,
-            languages=("pcm",),
+            languages=("pidgin",),
             voice_gender="female",
             supports_cancellation=True,
             enabled=has_key,

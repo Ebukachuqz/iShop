@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import json
+import inspect
 import logging
 import secrets
 import time
@@ -165,6 +166,7 @@ def create_voice_app(
         grant: SessionGrant | None = None
         pending_commands: dict[str, dict[str, Any]] = {}
         tts_tasks: set[asyncio.Task[None]] = set()
+        finish_tasks: set[asyncio.Task[None]] = set()
         latest_shopping_revision = 0
         payload: dict[str, Any] = {}
 
@@ -188,13 +190,13 @@ def create_voice_app(
 
         async def deliver_tts(result: dict[str, Any], payload: dict[str, Any]) -> None:
             try:
-                try:
+                if len(inspect.signature(shopping_tts_handler).parameters) >= 3:
                     output = shopping_tts_handler(  # type: ignore[misc]
                         str(result["spoken_response"]),
                         int(payload["request_revision"]),
                         grant,
                     )
-                except TypeError:
+                else:
                     output = shopping_tts_handler(  # type: ignore[misc]
                         str(result["spoken_response"]),
                         int(payload["request_revision"]),
@@ -234,6 +236,25 @@ def create_voice_app(
         def cancel_pending_tts() -> None:
             for task in tuple(tts_tasks):
                 task.cancel()
+
+        def cancel_finishing_speech() -> None:
+            for task in tuple(finish_tasks):
+                task.cancel()
+
+        async def finish_speech_turn(active_session: RealtimeSpeechSession, active_events: asyncio.Task[None] | None) -> None:
+            try:
+                await asyncio.wait_for(active_session.commit(), timeout=10)
+                if active_events is not None:
+                    await asyncio.wait_for(active_events, timeout=30)
+            except asyncio.CancelledError:
+                await active_session.cancel()
+                raise
+            except (SpeechProviderError, TimeoutError):
+                await _send_error(websocket, "provider_stream_failed")
+                await active_session.cancel()
+            finally:
+                if active_events is not None and not active_events.done():
+                    active_events.cancel()
         try:
             first = await websocket.receive_json()
             try:
@@ -288,6 +309,7 @@ def create_voice_app(
                 action = payload.get("type")
                 if action == "start_turn":
                     cancel_pending_tts()
+                    cancel_finishing_speech()
                     requested_revision = payload.get("revision")
                     if not isinstance(requested_revision, int) or requested_revision < 1:
                         await _send_error(websocket, "invalid_revision")
@@ -308,17 +330,18 @@ def create_voice_app(
                     if session is not None:
                         await session.cancel()
                     revision = requested_revision
-                    session = make_session(
-                        revision=revision,
-                        language=str(payload.get("language", "pcm")),
-                        sample_rate=sample_rate,
-                        channels=channels,
-                    )
                     try:
+                        session = make_session(
+                            revision=revision,
+                            language=str(payload.get("language", "pcm")),
+                            sample_rate=sample_rate,
+                            channels=channels,
+                        )
                         started = await asyncio.wait_for(session.start(), timeout=15)
-                    except (SpeechProviderError, TimeoutError):
+                    except (SpeechProviderError, TimeoutError, TypeError, ValueError):
                         await _send_error(websocket, "provider_start_failed")
-                        await session.cancel()
+                        if session is not None:
+                            await session.cancel()
                         session = None
                         continue
                     if events_task is not None and not events_task.done():
@@ -342,20 +365,14 @@ def create_voice_app(
                     if session is None:
                         await _send_error(websocket, "session_not_started")
                         continue
-                    try:
-                        await asyncio.wait_for(session.commit(), timeout=10)
-                        if events_task is not None:
-                            await asyncio.wait_for(events_task, timeout=30)
-                    except (SpeechProviderError, TimeoutError):
-                        await _send_error(websocket, "provider_stream_failed")
-                        await session.cancel()
-                    finally:
-                        if events_task is not None and not events_task.done():
-                            events_task.cancel()
-                        events_task = None
-                        session = None
+                    active_session, active_events = session, events_task
+                    session, events_task = None, None
+                    task = asyncio.create_task(finish_speech_turn(active_session, active_events))
+                    finish_tasks.add(task)
+                    task.add_done_callback(finish_tasks.discard)
                 elif action == "cancel_turn":
                     cancel_pending_tts()
+                    cancel_finishing_speech()
                     if events_task is not None and not events_task.done():
                         events_task.cancel()
                         events_task = None
@@ -443,6 +460,10 @@ def create_voice_app(
         except (WebSocketDisconnect, ValueError, TypeError):
             pass
         finally:
+            for task in tuple(finish_tasks):
+                task.cancel()
+            if finish_tasks:
+                await asyncio.gather(*finish_tasks, return_exceptions=True)
             cancel_pending_tts()
             if events_task is not None and not events_task.done():
                 events_task.cancel()
