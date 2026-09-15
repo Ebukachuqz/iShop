@@ -62,7 +62,11 @@ class RuntimeSettings:
             elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", "").strip() or None,
             assemblyai_api_key=os.getenv("ASSEMBLYAI_API_KEY", "").strip() or os.getenv("ASSEMBLY_AI_API_KEY", "").strip() or None,
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip() or None,
-            state_db_path=os.getenv("ISHOP_STATE_DB", ".ishop/runtime-state.sqlite3").strip() or ".ishop/runtime-state.sqlite3",
+            state_db_path=(
+                os.getenv("RUNTIME_DATABASE_PATH", "").strip()
+                or os.getenv("ISHOP_STATE_DB", "").strip()
+                or ".ishop/runtime-state.sqlite3"
+            ),
         )
 
 

@@ -99,3 +99,14 @@ def test_runtime_settings_reject_short_control_secret(
     monkeypatch.setenv("RUNTIME_CONTROL_SECRET", "short")
     with pytest.raises(ValueError, match="RUNTIME_CONTROL_SECRET"):
         RuntimeSettings.from_environment()
+
+
+def test_runtime_settings_uses_documented_persistent_database_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SESSION_SIGNING_SECRET", "runtime_test_signing_secret_123456789")
+    monkeypatch.setenv("DEV_ALLOWED_ORIGINS", "https://shop.myshopify.com")
+    monkeypatch.setenv("SAHARA_API_KEY", "test-key")
+    monkeypatch.setenv("RUNTIME_DATABASE_PATH", "persistent/runtime.sqlite")
+    monkeypatch.setenv("ISHOP_STATE_DB", "legacy/runtime.sqlite")
+    assert RuntimeSettings.from_environment().state_db_path == "persistent/runtime.sqlite"
