@@ -10,6 +10,8 @@ evals/private/
 artifacts/private/
 artifacts/runs/
 artifacts/browser/
+output/
+tmp/
 *.wav
 *.mp3
 *.m4a
@@ -41,6 +43,9 @@ playwright-report/
 test-results/
 .DS_Store
 Thumbs.db
-docs/*
+# Internal agent instructions, planning state, and research notes
 AGENTS.md
-evals/AGENTS.md
+**/AGENTS.md
+.agents/
+.codex/
+docs/*
