@@ -1,8 +1,4 @@
-"""Automated tests for validation harness scripts.
-
-Includes negative test cases for secret scanning and safety invariant mappings
-to ensure false passes are impossible under Safety S-13.
-"""
+"""Automated tests for public-documentation and secret validation scripts."""
 
 from __future__ import annotations
 
@@ -25,10 +21,7 @@ def load_script_module(module_name: str, script_path: Path):
 check_docs = load_script_module("check_docs", ROOT / "scripts" / "check-docs.py")
 check_secrets = load_script_module("check_secrets", ROOT / "scripts" / "check-secrets.py")
 
-check_status_work_packages = check_docs.check_status_work_packages
-parse_safety_invariants = check_docs.parse_safety_invariants
-parse_test_cases = check_docs.parse_test_cases
-validate_invariant_mappings = check_docs.validate_invariant_mappings
+validate_public_doc = check_docs.validate_file
 
 check_tracked_files = check_secrets.check_tracked_files
 scan_content_for_secrets = check_secrets.scan_content_for_secrets
@@ -120,54 +113,31 @@ class TestSecretScanning:
         assert errors == []
 
 
-class TestInvariantMappings:
-    def test_parse_safety_invariants(self):
-        sample_safety = """
-| ID | Invariant | Required enforcement | Evidence |
-|---|---|---|---|
-| S-01 | No payment | Deny | T-01, T-20 |
-| S-02 | Checkout handoff | Terminate | T-20, T-21 |
-"""
-        invariants = parse_safety_invariants(sample_safety)
-        assert "S-01" in invariants
-        assert invariants["S-01"] == ["T-01", "T-20"]
-        assert "S-02" in invariants
-        assert invariants["S-02"] == ["T-20", "T-21"]
+class TestPublicDocumentation:
+    def test_valid_local_and_external_links(self, tmp_path: Path):
+        target = tmp_path / "target.md"
+        target.write_text("# Target\n", encoding="utf-8")
+        source = tmp_path / "source.md"
+        source.write_text("[Local](target.md) and [Web](https://example.com)\n", encoding="utf-8")
 
-    def test_negative_missing_invariant(self):
-        sample_safety = "\n".join(
-            f"| S-{i:02d} | Invariant {i} | Enforcement | T-01 |" for i in range(1, 14)
+        assert validate_public_doc(source) == []
+
+    def test_broken_local_link_fails(self, tmp_path: Path):
+        source = tmp_path / "source.md"
+        source.write_text("[Missing](missing.md)\n", encoding="utf-8")
+
+        errors = validate_public_doc(source)
+        assert len(errors) == 1
+        assert "Broken link" in errors[0]
+
+    def test_internal_or_machine_specific_content_fails(self, tmp_path: Path):
+        source = tmp_path / "source.md"
+        source.write_text(
+            "Read AGENTS.md and C:\\Users\\example\\private.txt for the hackathon.\n",
+            encoding="utf-8",
         )
-        sample_testing = "| T-01 | Test 1 | WP-01 |"
 
-        errors = validate_invariant_mappings(sample_safety, sample_testing)
-        assert any("Invariant S-14 is missing" in err for err in errors)
-
-    def test_negative_unmapped_invariant(self):
-        sample_safety = "\n".join(
-            f"| S-{i:02d} | Invariant {i} | Enforcement | {'T-01' if i != 3 else ''} |"
-            for i in range(1, 15)
-        )
-        sample_testing = "| T-01 | Test 1 | WP-01 |"
-
-        errors = validate_invariant_mappings(sample_safety, sample_testing)
-        assert any("Invariant S-03 has no mapped test cases" in err for err in errors)
-
-    def test_negative_undefined_test_case_in_mapping(self):
-        sample_safety = "\n".join(
-            f"| S-{i:02d} | Invariant {i} | Enforcement | {'T-01' if i != 2 else 'T-99'} |"
-            for i in range(1, 15)
-        )
-        sample_testing = "| T-01 | Test 1 | WP-01 |"
-
-        errors = validate_invariant_mappings(sample_safety, sample_testing)
-        assert any("maps to undefined test case T-99" in err for err in errors)
-
-    def test_negative_status_work_packages(self):
-        status_missing_wp = """
-| Package | State | Evidence |
-| [WP-00](work-packages/WP-00.md) | complete | done |
-| [WP-01](work-packages/WP-01.md) | queued | next |
-"""
-        errors = check_status_work_packages(status_missing_wp)
-        assert len(errors) == 13
+        errors = validate_public_doc(source)
+        assert any("internal agent instruction" in error for error in errors)
+        assert any("Windows user path" in error for error in errors)
+        assert any("competition-specific wording" in error for error in errors)
